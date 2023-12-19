@@ -19,3 +19,43 @@ fly site <website> wp
 
 In-case you want to run a `wp` command in a specific webwebsite, you could run like this.
 
+### Site Operations
+
+Website names should *preferably* be autocompleted.
+
+```bash
+fly site <website> up
+fly site <website> down
+fly site <website> restart
+fly site <website> logs <container>
+fly site <website> restart <container>
+fly site <website> exec <container>
+```
+
+From anywhere inside a site folder:
+
+```bash
+fly up
+fly down
+fly restart
+fly logs <container>
+fly restart <container>
+fly exec <container>
+```
+
+### Base Docker Compose
+
+```bash
+fly base stop
+fly base start
+fly base restart
+```
+
+### Global Commands
+
+```bash
+fly status
+fly sites stop
+fly sites start
+fly sites restart
+```
