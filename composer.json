@@ -1,0 +1,15 @@
+{
+    "name": "flywp/cli",
+    "description": "CLI tool for servers managed by FlyWP",
+    "authors": [
+        {
+            "name": "Al-Amin Firdows",
+            "email": "hello@alamin.me"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Fly\\": "src/"
+        }
+    }
+}
