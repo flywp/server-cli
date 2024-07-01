@@ -60,9 +60,10 @@ var stopCmd = &cobra.Command{
 }
 
 var restartCmd = &cobra.Command{
-	Use:   "restart",
-	Short: "Restart the site",
-	Long:  "Restart the Docker container for the site",
+	Use:   "restart [container]",
+	Short: "Restart the site or a specific container",
+	Long:  "Restart the Docker containers for the site. Optionally, specify a container to restart only that container.",
+	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
@@ -70,8 +71,15 @@ var restartCmd = &cobra.Command{
 			return
 		}
 
-		if err := docker.RunCompose(composePath, "restart"); err != nil {
-			fmt.Println("Error restarting container:", err)
+		if len(args) == 1 {
+			containerName := args[0]
+			if err := docker.RunCompose(composePath, "restart", containerName); err != nil {
+				fmt.Println("Error restarting container:", err)
+			}
+		} else {
+			if err := docker.RunCompose(composePath, "restart"); err != nil {
+				fmt.Println("Error restarting Docker Compose setup:", err)
+			}
 		}
 	},
 }
