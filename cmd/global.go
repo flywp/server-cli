@@ -109,17 +109,20 @@ func startAllSites() {
 	sitesDir := "/home/fly"
 	foundSite := false
 
-	filepath.Walk(sitesDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+	entries, err := os.ReadDir(sitesDir)
+	if err != nil {
+		fmt.Printf("Error reading directory %s: %v\n", sitesDir, err)
+		return
+	}
 
-		// Skip hidden directories
-		if info.IsDir() && strings.HasPrefix(info.Name(), ".") {
-			return filepath.SkipDir
-		}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			// Skip hidden directories
+			if strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
 
-		if info.IsDir() && filepath.Base(path) != "fly" {
+			path := filepath.Join(sitesDir, entry.Name())
 			composePath := filepath.Join(path, "docker-compose.yml")
 			if _, err := os.Stat(composePath); err == nil {
 				fmt.Printf("Starting site in %s\n", path)
@@ -127,9 +130,7 @@ func startAllSites() {
 				foundSite = true
 			}
 		}
-
-		return nil
-	})
+	}
 
 	if !foundSite {
 		fmt.Println("No sites found to start.")
@@ -139,26 +140,29 @@ func startAllSites() {
 func stopAllSites() {
 	sitesDir := "/home/fly"
 	foundSite := false
-	filepath.Walk(sitesDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
 
-		// Skip hidden directories
-		if info.IsDir() && strings.HasPrefix(info.Name(), ".") {
-			return filepath.SkipDir
-		}
+	entries, err := os.ReadDir(sitesDir)
+	if err != nil {
+		fmt.Printf("Error reading directory %s: %v\n", sitesDir, err)
+		return
+	}
 
-		if info.IsDir() && filepath.Base(path) != "fly" {
+	for _, entry := range entries {
+		if entry.IsDir() {
+			// Skip hidden directories
+			if strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+
+			path := filepath.Join(sitesDir, entry.Name())
 			composePath := filepath.Join(path, "docker-compose.yml")
 			if _, err := os.Stat(composePath); err == nil {
-				fmt.Printf("Stopping site in %s\n", path)
-				docker.RunCompose(composePath, "down")
+				fmt.Printf("Starting site in %s\n", path)
+				docker.RunCompose(composePath, "up", "-d")
 				foundSite = true
 			}
 		}
-		return nil
-	})
+	}
 
 	if !foundSite {
 		fmt.Println("No sites found to stop.")
