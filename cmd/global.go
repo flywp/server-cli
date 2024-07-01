@@ -158,7 +158,7 @@ func stopAllSites() {
 			composePath := filepath.Join(path, "docker-compose.yml")
 			if _, err := os.Stat(composePath); err == nil {
 				fmt.Printf("Starting site in %s\n", path)
-				docker.RunCompose(composePath, "up", "-d")
+				docker.RunCompose(composePath, "down")
 				foundSite = true
 			}
 		}
