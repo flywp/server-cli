@@ -52,10 +52,16 @@ func SelfUpdate() error {
 		return err
 	}
 
+	// print debug info of release
+	fmt.Printf("Release: %s\n", release.TagName)
+
 	assetURL := getAssetURL(release)
 	if assetURL == "" {
 		return fmt.Errorf("no suitable binary found for this system")
 	}
+
+	// print debug info of asset
+	fmt.Printf("Asset URL: %s\n", assetURL)
 
 	// Download the new binary
 	resp, err := http.Get(assetURL)
