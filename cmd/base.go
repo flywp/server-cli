@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
+	"github.com/fatih/color"
 	"github.com/flywp/server-cli/internal/docker"
 	"github.com/spf13/cobra"
 )
@@ -20,16 +20,16 @@ var baseStartCmd = &cobra.Command{
 	Short: "Start base services",
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := docker.RunCompose(baseCompose, "up", "-d"); err != nil {
-			fmt.Println("Error starting base services:", err)
+			color.Red("Error starting base services: %v", err)
 			os.Exit(1)
 			return
 		}
 
 		if err := docker.RunCompose(baseCompose, "ps"); err != nil {
-			fmt.Println("Error checking status of base services:", err)
+			color.Red("Error checking status of base services: %v", err)
 		}
 
-		fmt.Println("Base services started successfully")
+		color.Green("Base services started successfully")
 	},
 }
 
@@ -38,10 +38,10 @@ var baseStopCmd = &cobra.Command{
 	Short: "Stop base services",
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := docker.RunCompose(baseCompose, "down"); err != nil {
-			fmt.Println("Error stopping base services:", err)
+			color.Red("Error stopping base services:", err)
 		}
 
-		fmt.Println("Base services stopped successfully")
+		color.Green("Base services stopped successfully")
 	},
 }
 
@@ -50,18 +50,18 @@ var baseRestartCmd = &cobra.Command{
 	Short: "Restart base services",
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := docker.RunCompose(baseCompose, "down"); err != nil {
-			fmt.Println("Error stopping base services:", err)
+			color.Red("Error stopping base services:", err)
 		}
 
 		if err := docker.RunCompose(baseCompose, "up", "-d"); err != nil {
-			fmt.Println("Error starting base services:", err)
+			color.Red("Error starting base services:", err)
 		}
 
 		if err := docker.RunCompose(baseCompose, "ps"); err != nil {
-			fmt.Println("Error checking status of base services:", err)
+			color.Red("Error checking status of base services:", err)
 		}
 
-		fmt.Println("Base services restarted successfully")
+		color.Green("Base services restarted successfully")
 	},
 }
 

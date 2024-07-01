@@ -8,8 +8,6 @@ ARCH=$(uname -m)
 
 if [ "$ARCH" == "x86_64" ]; then
     ARCH="amd64"
-elif [[ "$ARCH" == "armv7l" || "$ARCH" == "armv6l" ]]; then
-    ARCH="arm"
 elif [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
     ARCH="arm64"
 else

@@ -17,17 +17,20 @@ You can easily install the `fly` CLI tool using the following command. This will
 curl -sL https://raw.githubusercontent.com/flywp/server-cli/main/install.sh | bash
 ```
 
+<details>
+
+<summary>Manual Installation</summary>
+
 ### Manual Installation
 
 If you prefer to manually download and install the binary, follow these steps:
 
 1. Download the precompiled binaries from the [Releases](https://github.com/flywp/server-cli/releases) page. Choose the version suitable for your operating system and architecture.
 
-#### Linux
+1. Download the [latest tarball]((https://github.com/flywp/server-cli/releases)) for your platform:
 
-1. Download the tarball:
     ```bash
-    wget https://github.com/flywp/server-cli/releases/download/latest/fly-linux-amd64.tar.gz
+    wget https://github.com/flywp/server-cli/releases/download/v0.1.0/fly-linux-amd64.tar.gz
     ```
 
 2. Extract the tarball:
@@ -42,8 +45,10 @@ If you prefer to manually download and install the binary, follow these steps:
 
 4. Verify the installation:
     ```bash
-    fly --version
+    fly version
     ```
+
+</details>
 
 ## Usage
 

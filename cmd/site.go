@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
+	"github.com/fatih/color"
 	"github.com/flywp/server-cli/internal/docker"
 	"github.com/flywp/server-cli/internal/utils"
 	"github.com/spf13/cobra"
@@ -15,12 +15,12 @@ var wpCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			fmt.Println("No docker-compose.yml file found")
+			color.Red("No docker-compose.yml file found.")
 			return
 		}
 
 		if err := docker.RunWPCLI(composePath, args); err != nil {
-			fmt.Println("Error running wp-cli:", err)
+			color.Red("Error running wp-cli: %s", err)
 		}
 	},
 }
@@ -32,12 +32,12 @@ var startCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			fmt.Println("No docker-compose.yml file found")
+			color.Red("No docker-compose.yml file found.")
 			return
 		}
 
 		if err := docker.RunCompose(composePath, "up", "-d"); err != nil {
-			fmt.Println("Error starting container:", err)
+			color.Red("Error starting container:", err)
 		}
 	},
 }
@@ -49,12 +49,12 @@ var stopCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			fmt.Println("No docker-compose.yml file found")
+			color.Red("No docker-compose.yml file found.")
 			return
 		}
 
 		if err := docker.RunCompose(composePath, "down"); err != nil {
-			fmt.Println("Error stopping container:", err)
+			color.Red("Error stopping container:", err)
 		}
 	},
 }
@@ -67,18 +67,18 @@ var restartCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			fmt.Println("No docker-compose.yml file found")
+			color.Red("No docker-compose.yml file found")
 			return
 		}
 
 		if len(args) == 1 {
 			containerName := args[0]
 			if err := docker.RunCompose(composePath, "restart", containerName); err != nil {
-				fmt.Println("Error restarting container:", err)
+				color.Red("Error restarting container:", err)
 			}
 		} else {
 			if err := docker.RunCompose(composePath, "restart"); err != nil {
-				fmt.Println("Error restarting Docker Compose setup:", err)
+				color.Red("Error restarting Docker Compose setup:", err)
 			}
 		}
 	},
@@ -90,12 +90,12 @@ var execCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			fmt.Println("No docker-compose.yml file found")
+			color.Red("No docker-compose.yml file found")
 			return
 		}
 
 		if len(args) == 0 {
-			fmt.Println("No command provided")
+			color.Yellow("No command provided")
 			return
 		}
 
@@ -112,7 +112,7 @@ var execCmd = &cobra.Command{
 		composeArgs = append(composeArgs, args...)
 
 		if err := docker.RunCompose(composePath, composeArgs...); err != nil {
-			fmt.Printf("Error executing command: %v\n", err)
+			color.Red("Error executing command: %v\n", err)
 		}
 	},
 }
@@ -125,7 +125,7 @@ var logsCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			cmd.PrintErrln("No docker-compose.yml file found")
+			color.Red("No docker-compose.yml file found")
 			os.Exit(1)
 		}
 
@@ -135,7 +135,7 @@ var logsCmd = &cobra.Command{
 		}
 
 		if err := docker.RunCompose(composePath, composeArgs...); err != nil {
-			cmd.PrintErrf("Error showing logs: %v\n", err)
+			color.Red("Error showing logs: %v\n", err)
 			os.Exit(1)
 		}
 	},

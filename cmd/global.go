@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/flywp/server-cli/internal/docker"
 	"github.com/spf13/cobra"
 )
@@ -19,58 +20,58 @@ var statusCmd = &cobra.Command{
 
 		// check if .fly directory exists
 		if _, err := os.Stat(homeDir + "/.fly"); os.IsNotExist(err) {
-			fmt.Println("❌ Root .fly directory does not exist")
+			color.Red("Root .fly directory does not exist")
 		} else {
-			fmt.Println("✅ Root .fly directory exists")
+			color.Green("Root .fly directory exists")
 		}
 
 		// check if docker-compose.yml exists
 		if _, err := os.Stat(homeDir + "/.fly/docker-compose.yml"); os.IsNotExist(err) {
-			fmt.Println("❌ Root docker-compose.yml does not exist")
+			color.Red("Root docker-compose.yml does not exist")
 		} else {
-			fmt.Println("✅ Root docker-compose.yml exists")
+			color.Green("Root docker-compose.yml exists")
 		}
 
 		// check if .provisions directory exists
 		if _, err := os.Stat(homeDir + "/.provisions"); os.IsNotExist(err) {
-			fmt.Println("❌ .provisions directory does not exist")
+			color.Red(".provisions directory does not exist")
 		} else {
-			fmt.Println("✅ .provisions directory exists")
+			color.Green(".provisions directory exists")
 		}
 
 		// check if mysql directory exists
 		if _, err := os.Stat(homeDir + "/.fly/database/mysql"); os.IsNotExist(err) {
-			fmt.Println("❌ MySQL directory does not exist")
+			color.Red("MySQL directory does not exist")
 		} else {
-			fmt.Println("✅ MySQL directory exists")
+			color.Green("MySQL directory exists")
 		}
 
 		// check if redis directory exists
 		if _, err := os.Stat(homeDir + "/.fly/database/redis"); os.IsNotExist(err) {
-			fmt.Println("❌ Redis directory does not exist")
+			color.Red("Redis directory does not exist")
 		} else {
-			fmt.Println("✅ Redis directory exists")
+			color.Green("Redis directory exists")
 		}
 
 		// check if nginx directory exists
 		if _, err := os.Stat(homeDir + "/.fly/nginx"); os.IsNotExist(err) {
-			fmt.Println("❌ Nginx directory does not exist")
+			color.Red("Nginx directory does not exist")
 		} else {
-			fmt.Println("✅ Nginx directory exists")
+			color.Green("Nginx directory exists")
 		}
 
 		// check if docker is installed
 		if output, err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").CombinedOutput(); err != nil {
-			fmt.Println("❌ Docker is not installed")
+			color.Red("Docker is not installed")
 		} else {
-			fmt.Println("✅ Docker is installed, version:", strings.TrimSpace(string(output)))
+			color.Green("Docker is installed, version: %s", strings.TrimSpace(string(output)))
 		}
 
 		// check if docker is running
 		if _, err := exec.Command("docker", "version").CombinedOutput(); err != nil {
-			fmt.Println("❌ Docker is not running")
+			color.Red("Docker is not running")
 		} else {
-			fmt.Println("✅ Docker is running")
+			color.Green("Docker is running")
 		}
 	},
 }
@@ -111,7 +112,7 @@ func startAllSites() {
 
 	entries, err := os.ReadDir(sitesDir)
 	if err != nil {
-		fmt.Printf("Error reading directory %s: %v\n", sitesDir, err)
+		color.Red("Error reading directory %s: %v\n", sitesDir, err)
 		return
 	}
 
@@ -125,7 +126,7 @@ func startAllSites() {
 			path := filepath.Join(sitesDir, entry.Name())
 			composePath := filepath.Join(path, "docker-compose.yml")
 			if _, err := os.Stat(composePath); err == nil {
-				fmt.Printf("Starting site in %s\n", path)
+				color.Yellow("Starting site in %s\n", filepath.Base(path))
 				docker.RunCompose(composePath, "up", "-d")
 				foundSite = true
 			}
@@ -143,7 +144,7 @@ func stopAllSites() {
 
 	entries, err := os.ReadDir(sitesDir)
 	if err != nil {
-		fmt.Printf("Error reading directory %s: %v\n", sitesDir, err)
+		color.Red("Error reading directory %s: %v\n", sitesDir, err)
 		return
 	}
 
@@ -157,7 +158,7 @@ func stopAllSites() {
 			path := filepath.Join(sitesDir, entry.Name())
 			composePath := filepath.Join(path, "docker-compose.yml")
 			if _, err := os.Stat(composePath); err == nil {
-				fmt.Printf("Stopping site in %s\n", path)
+				color.Yellow("Stopping site in %s\n", filepath.Base(path))
 				docker.RunCompose(composePath, "down")
 				foundSite = true
 			}
