@@ -19,6 +19,17 @@ build() {
     echo "Building for ${GOOS}/${GOARCH}..."
     GOOS=${GOOS} GOARCH=${GOARCH} go build -ldflags "${LDFLAGS}" -o "build/${OUTPUT}" .
     echo "Done building ${OUTPUT}"
+
+    create_archive "${OUTPUT}"
+}
+
+# Create tar.gz archive function
+create_archive() {
+    local OUTPUT=$1
+
+    echo "Creating archive for ${OUTPUT}..."
+    tar -czvf "build/${OUTPUT}.tar.gz" -C build "${OUTPUT}"
+    echo "Done creating archive ${OUTPUT}.tar.gz"
 }
 
 # Clean build directory
