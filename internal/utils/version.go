@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -49,62 +50,75 @@ func SelfUpdate() error {
 
 	release, err := getLatestRelease()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get latest release: %w", err)
 	}
-
-	// print debug info of release
-	fmt.Printf("Release: %s\n", release.TagName)
 
 	assetURL := getAssetURL(release)
 	if assetURL == "" {
-		return fmt.Errorf("no suitable binary found for this system")
+		return fmt.Errorf("no suitable binary found for this system (OS: %s, ARCH: %s)", runtime.GOOS, runtime.GOARCH)
 	}
 
-	// print debug info of asset
-	fmt.Printf("Asset URL: %s\n", assetURL)
+	// Create a temporary directory
+	tmpDir, err := os.MkdirTemp("", "fly-cli-update")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
 
-	// Download the new binary
+	// Download the archive
 	resp, err := http.Get(assetURL)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to download update: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Create a temporary file
-	tmpFile, err := os.CreateTemp("", "fly-cli-update")
-	if err != nil {
-		return err
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download update: HTTP %d", resp.StatusCode)
 	}
-	defer os.Remove(tmpFile.Name())
+
+	// Create the archive file
+	archivePath := filepath.Join(tmpDir, "update.tar.gz")
+	out, err := os.Create(archivePath)
+	if err != nil {
+		return fmt.Errorf("failed to create archive file: %w", err)
+	}
 
 	// Write the body to file
-	_, err = io.Copy(tmpFile, resp.Body)
+	_, err = io.Copy(out, resp.Body)
+	out.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to write archive file: %w", err)
 	}
 
-	// Close the file
-	if err := tmpFile.Close(); err != nil {
-		return err
-	}
-
-	// Make it executable
-	if err := os.Chmod(tmpFile.Name(), 0755); err != nil {
-		return err
+	// Extract the archive
+	binaryName := fmt.Sprintf("fly-%s-%s", runtime.GOOS, runtime.GOARCH)
+	cmd := exec.Command("tar", "-xzf", archivePath, "-C", tmpDir)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to extract archive: %w", err)
 	}
 
 	// Get the current executable path
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get current executable path: %w", err)
 	}
 	exe, err = filepath.EvalSymlinks(exe)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to resolve symlinks: %w", err)
+	}
+
+	// Make the new binary executable
+	extractedBinary := filepath.Join(tmpDir, binaryName)
+	if err := os.Chmod(extractedBinary, 0755); err != nil {
+		return fmt.Errorf("failed to make binary executable: %w", err)
 	}
 
 	// Rename the temporary file to the executable name
-	return os.Rename(tmpFile.Name(), exe)
+	if err := os.Rename(extractedBinary, exe); err != nil {
+		return fmt.Errorf("failed to replace old binary: %w", err)
+	}
+
+	return nil
 }
 
 func getLatestRelease() (*GithubRelease, error) {
@@ -129,12 +143,13 @@ func getLatestRelease() (*GithubRelease, error) {
 
 func getAssetURL(release *GithubRelease) string {
 	arch := runtime.GOARCH
-	os := runtime.GOOS
+	if runtime.GOOS != "linux" {
+		return ""
+	}
 
+	expectedName := fmt.Sprintf("fly-linux-%s.tar.gz", arch)
 	for _, asset := range release.Assets {
-		if filepath.Ext(asset.Name) == ".tar.gz" &&
-			((os == "linux" && arch == "amd64" && asset.Name == "fly-linux-amd64.tar.gz") ||
-				(os == "linux" && arch == "arm64" && asset.Name == "fly-linux-arm64.tar.gz")) {
+		if asset.Name == expectedName {
 			return asset.BrowserDownloadURL
 		}
 	}

@@ -1,6 +1,5 @@
 /*
-Copyright © 2024 NAME HERE <EMAIL ADDRESS>
-
+Copyright © 2025 FlyWP, Inc. <info@flywp.com>
 */
 package main
 
