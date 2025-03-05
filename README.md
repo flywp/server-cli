@@ -64,7 +64,7 @@ fly base restart            # restarts the base services
 
 ### Site Operations
 
-From anywhere inside a site folder, you can run the following commands that will be executed on a per-site basis.
+You can run the following commands from anywhere inside a site folder or by specifying the domain name.
 
 ```bash
 fly start                   # starts the website (via Docker Compose)
@@ -74,6 +74,18 @@ fly wp                      # execute WP-CLI commands
 fly logs <container>        # view logs from all containers or a single one
 fly restart <container>     # restart a container
 fly exec <container>        # execute commands inside a container. Default: "php"
+```
+
+You can also specify the domain name to run the commands from outside the site folder:
+
+```bash
+fly [domain] start          # starts the website for the specified domain
+fly [domain] stop           # stops the website for the specified domain
+fly [domain] restart        # restarts the website for the specified domain
+fly [domain] wp             # execute WP-CLI commands for the specified domain
+fly [domain] logs <container> # view logs from all containers or a single one for the specified domain
+fly [domain] restart <container> # restart a container for the specified domain
+fly [domain] exec <container> # execute commands inside a container for the specified domain. Default: "php"
 ```
 
 ### WP-CLI
