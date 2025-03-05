@@ -15,7 +15,7 @@ var wpCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			color.Red("No docker-compose.yml file found.")
+			utils.ShowNoComposeError()
 			return
 		}
 
@@ -32,7 +32,7 @@ var startCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			color.Red("No docker-compose.yml file found.")
+			utils.ShowNoComposeError()
 			return
 		}
 
@@ -49,7 +49,7 @@ var stopCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			color.Red("No docker-compose.yml file found.")
+			utils.ShowNoComposeError()
 			return
 		}
 
@@ -67,7 +67,7 @@ var restartCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			color.Red("No docker-compose.yml file found")
+			utils.ShowNoComposeError()
 			return
 		}
 
@@ -90,7 +90,7 @@ var execCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			color.Red("No docker-compose.yml file found")
+			utils.ShowNoComposeError()
 			return
 		}
 
@@ -125,7 +125,7 @@ var logsCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		composePath := utils.FindComposeFile()
 		if composePath == "" {
-			color.Red("No docker-compose.yml file found")
+			utils.ShowNoComposeError()
 			os.Exit(1)
 		}
 
