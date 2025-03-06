@@ -67,33 +67,33 @@ fly base restart            # restarts the base services
 You can run the following commands from anywhere inside a site folder or by specifying the domain name.
 
 ```bash
-fly start                   # starts the website (via Docker Compose)
-fly stop                    # stops the website (via Docker Compose)
-fly restart                 # restarts the website (via Docker Compose)
+fly start --domain example.com       # starts the website
+fly stop --domain example.com        # stops the website
+fly restart --domain example.com     # restarts the website
+fly wp --domain example.com          # execute WP-CLI commands
+fly logs --domain example.com        # view logs from all containers or a single one
+fly restart <container> --domain example.com  # restart a container
+fly exec <container> --domain example.com     # execute commands inside a container. Default: "php"
+```
+
+Or run the commands from within the site directory without specifying the domain:
+
+```bash
+fly start                   # starts the website
+fly stop                    # stops the website
+fly restart                 # restarts the website
 fly wp                      # execute WP-CLI commands
 fly logs <container>        # view logs from all containers or a single one
 fly restart <container>     # restart a container
 fly exec <container>        # execute commands inside a container. Default: "php"
 ```
 
-You can also specify the domain name to run the commands from outside the site folder:
-
-```bash
-fly [domain] start          # starts the website for the specified domain
-fly [domain] stop           # stops the website for the specified domain
-fly [domain] restart        # restarts the website for the specified domain
-fly [domain] wp             # execute WP-CLI commands for the specified domain
-fly [domain] logs <container> # view logs from all containers or a single one for the specified domain
-fly [domain] restart <container> # restart a container for the specified domain
-fly [domain] exec <container> # execute commands inside a container for the specified domain. Default: "php"
-```
-
 ### WP-CLI
 
-**wp-cli**: To access `wp-cli`, use the following command from anywhere in the website folder. The CLI will find the appropriate WordPress folder to execute the `wp` command.
+**wp-cli**: To access `wp-cli`, use the following command from anywhere in the website folder or specify the domain name. The CLI will find the appropriate WordPress folder to execute the `wp` command.
 
 ```bash
-fly wp
+fly wp --domain example.com
 ```
 
 ### Global Commands

@@ -9,11 +9,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Define domain flag as a global variable
+var domain string
+
 var wpCmd = &cobra.Command{
 	Use:   "wp",
 	Short: "Run wp-cli commands",
 	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile()
+		composePath := utils.FindComposeFile(domain)
 		if composePath == "" {
 			utils.ShowNoComposeError()
 			return
@@ -30,7 +33,7 @@ var startCmd = &cobra.Command{
 	Short: "Start the site",
 	Long:  "Start the Docker container for the site",
 	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile()
+		composePath := utils.FindComposeFile(domain)
 		if composePath == "" {
 			utils.ShowNoComposeError()
 			return
@@ -47,7 +50,7 @@ var stopCmd = &cobra.Command{
 	Short: "Stop the site",
 	Long:  "Stop the Docker container for the site",
 	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile()
+		composePath := utils.FindComposeFile(domain)
 		if composePath == "" {
 			utils.ShowNoComposeError()
 			return
@@ -65,7 +68,7 @@ var restartCmd = &cobra.Command{
 	Long:  "Restart the Docker containers for the site. Optionally, specify a container to restart only that container.",
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile()
+		composePath := utils.FindComposeFile(domain)
 		if composePath == "" {
 			utils.ShowNoComposeError()
 			return
@@ -88,7 +91,7 @@ var execCmd = &cobra.Command{
 	Use:   "exec",
 	Short: "Execute a command in the Docker container",
 	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile()
+		composePath := utils.FindComposeFile(domain)
 		if composePath == "" {
 			utils.ShowNoComposeError()
 			return
@@ -123,7 +126,7 @@ var logsCmd = &cobra.Command{
 	Long:  `Show logs of Docker container(s). If no container is specified, it shows logs for all containers.`,
 	Args:  cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile()
+		composePath := utils.FindComposeFile(domain)
 		if composePath == "" {
 			utils.ShowNoComposeError()
 			os.Exit(1)
@@ -142,6 +145,9 @@ var logsCmd = &cobra.Command{
 }
 
 func init() {
+	// Add domain flag to rootCmd
+	rootCmd.PersistentFlags().StringVar(&domain, "domain", "", "Specify domain for executing commands in a specific site")
+
 	rootCmd.AddCommand(wpCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(stopCmd)
