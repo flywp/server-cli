@@ -10,5 +10,5 @@ func ShowNoComposeError() {
 	color.Yellow("  cd ~/example.com")
 	color.Yellow("  fly start")
 	color.Yellow("\nOr specify the domain name:")
-	color.Yellow("  fly example.com start")
+	color.Yellow("  fly start --domain example.com")
 }
