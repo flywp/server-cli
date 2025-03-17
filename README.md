@@ -14,7 +14,7 @@ Easy CLI tool for servers managed by FlyWP.
 You can easily install the `fly` CLI tool using the following command. This will download and run the `install.sh` script, which will automatically detect your operating system and architecture, download the latest release, and install it to `/usr/local/bin`:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/flywp/server-cli/main/install.sh | bash
+curl -sL https://raw.githubusercontent.com/flywp/server-cli/main/install.sh | sudo bash
 ```
 
 <details>
