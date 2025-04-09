@@ -48,8 +48,8 @@ func getContainerName(composePath string) (string, error) {
 
 	if _, exists := config.Services["php"]; exists {
 		return "php", nil
-	} else if _, exists := config.Services["litespeed"]; exists {
-		return "litespeed", nil
+	} else if _, exists := config.Services["openlitespeed"]; exists {
+		return "openlitespeed", nil
 	}
 
 	return "", fmt.Errorf("no suitable container found")

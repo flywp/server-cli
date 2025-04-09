@@ -102,10 +102,10 @@ var execCmd = &cobra.Command{
 			return
 		}
 
-		// if the next argument is "php", "nginx" or "litespeed", use it as the service name
+		// if the next argument is "php", "nginx" or "openlitespeed", use it as the service name
 		// otherwise, use "php" as the default service name
 		composeArgs := []string{"exec"}
-		if args[0] == "php" || args[0] == "nginx" || args[0] == "litespeed" {
+		if args[0] == "php" || args[0] == "nginx" || args[0] == "openlitespeed" {
 			composeArgs = append(composeArgs, args[0])
 			args = args[1:]
 		} else {
