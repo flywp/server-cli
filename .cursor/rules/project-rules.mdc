@@ -1,0 +1,163 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# FlyWP Server CLI Project Rules
+
+## Project Overview
+
+This is a Go CLI application called "fly" that manages WordPress sites using Docker and Docker Compose. The CLI provides commands for managing base services (MySQL, Redis, Nginx Proxy) and individual WordPress sites.
+
+## Project Structure
+
+### Entry Point
+- [main.go](mdc:main.go) - Main entry point that calls `cmd.Execute()`
+
+### Command Structure
+- [cmd/root.go](mdc:cmd/root.go) - Root command definition using Cobra CLI framework
+- [cmd/site.go](mdc:cmd/site.go) - Site-specific commands (start, stop, restart, wp, exec, logs)
+- [cmd/base.go](mdc:cmd/base.go) - Base services commands (start, stop, restart base infrastructure)
+- [cmd/global.go](mdc:cmd/global.go) - Global commands (status, sites management)
+- [cmd/version.go](mdc:cmd/version.go) - Version command and update functionality
+
+### Internal Packages
+- [internal/docker/compose.go](mdc:internal/docker/compose.go) - Docker Compose operations
+- [internal/utils/finder.go](mdc:internal/utils/finder.go) - File and directory finding utilities
+- [internal/utils/error.go](mdc:internal/utils/error.go) - Error handling utilities
+- [internal/utils/version.go](mdc:internal/utils/version.go) - Version management utilities
+- [internal/version/](mdc:internal/version) - Version-related functionality
+
+### Configuration
+- [go.mod](mdc:go.mod) - Go module definition with dependencies (Cobra CLI, color output)
+- [go.sum](mdc:go.sum) - Go module checksums
+
+### Build and Installation
+- [build.sh](mdc:build.sh) - Build script for creating binaries
+- [install.sh](mdc:install.sh) - Installation script for end users
+
+## Architecture Patterns
+
+### Command Pattern
+- Uses Cobra CLI framework for command structure
+- Each command is defined in separate files under `cmd/`
+- Commands are registered in `init()` functions
+- Global `--domain` flag available for all commands
+
+### Domain Resolution
+- Commands can work from within a site directory OR with `--domain` flag
+- `utils.FindComposeFile(domain)` locates the appropriate docker-compose.yml
+- Graceful error handling when compose files aren't found
+
+### Docker Integration
+- All operations use Docker Compose under the hood
+- Base services (MySQL, Redis, Nginx Proxy) run separately from sites
+- Each WordPress site has its own docker-compose.yml
+
+## Development Guidelines
+
+### Adding New Commands
+1. Create command in appropriate file under `cmd/`
+2. Use `utils.FindComposeFile(domain)` for site-specific commands
+3. Use `docker.RunCompose()` for Docker operations
+4. Add command to root in `init()` function
+5. Follow existing error handling patterns with color output
+
+### Error Handling
+- Use `utils.ShowNoComposeError()` when compose file not found
+- Use `color.Red()` for error messages
+- Use `color.Yellow()` for warnings
+- Exit with appropriate codes
+
+### Code Organization
+- Keep commands in `cmd/` package
+- Put reusable logic in `internal/` packages
+- Use descriptive function names
+- Follow Go naming conventions
+
+### Docker Operations
+- Always check for compose file existence first
+- Use `docker.RunCompose()` wrapper function
+- Handle container-specific operations (php, nginx, litespeed)
+- Support both service names and default behaviors
+
+## Key Features
+
+### Site Management
+- Start/stop/restart individual WordPress sites
+- Execute WP-CLI commands in containers
+- View logs from containers
+- Execute arbitrary commands in containers
+
+### Base Services
+- Manage shared infrastructure (MySQL, Redis, Nginx Proxy)
+- Must be started before sites can run
+- Separate lifecycle from individual sites
+
+### Global Operations
+- Start/stop all sites at once
+- System status checking
+- Version management and updates
+
+## Dependencies
+
+### Core Dependencies
+- `github.com/spf13/cobra` - CLI framework
+- `github.com/fatih/color` - Colored terminal output
+
+### System Requirements
+- Docker and Docker Compose must be installed
+- Runs on Linux, macOS, and Windows
+- Requires appropriate permissions (not root for most commands)
+
+## Testing and Building
+
+### Local Development
+- Use `go run main.go` for testing
+- Build with `./build.sh` script
+- Install locally with `./install.sh`
+
+### Release Process
+- Binaries are built for multiple platforms
+- GitHub releases provide pre-compiled binaries
+- Installation script detects platform automatically
+
+## Security Considerations
+
+- Commands check against running as root (except update)
+- Domain validation prevents path traversal
+- Docker operations are sandboxed
+- No direct file system modifications outside Docker
+
+## Common Patterns
+
+### Command Structure
+```go
+var myCmd = &cobra.Command{
+    Use:   "command",
+    Short: "Brief description",
+    Run: func(cmd *cobra.Command, args []string) {
+        composePath := utils.FindComposeFile(domain)
+        if composePath == "" {
+            utils.ShowNoComposeError()
+            return
+        }
+        // Command logic here
+    },
+}
+```
+
+### Docker Operations
+```go
+if err := docker.RunCompose(composePath, "up", "-d"); err != nil {
+    color.Red("Error: %s", err)
+}
+```
+
+### Error Handling
+```go
+if composePath == "" {
+    utils.ShowNoComposeError()
+    return
+}
+```
