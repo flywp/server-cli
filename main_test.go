@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/flywp/server-cli/internal/testutil"
 )
@@ -66,11 +68,15 @@ func newEnv(t *testing.T, services ...string) *env {
 	return &env{home: home, site: site, docker: testutil.NewFakeDocker(t)}
 }
 
-// run executes fly in dir with the test environment.
+// run executes fly in dir with the test environment. It kills fly and fails
+// the test if fly does not finish within 10 seconds.
 func (e *env) run(t *testing.T, dir string, args ...string) result {
 	t.Helper()
 
-	cmd := exec.Command(flyBin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, flyBin, args...)
 	cmd.Dir = dir
 	cmd.Env = append(append(e.docker.Env(), "HOME="+e.home), e.vars...)
 
@@ -82,6 +88,8 @@ func (e *env) run(t *testing.T, dir string, args ...string) result {
 
 	var exitErr *exec.ExitError
 	switch {
+	case ctx.Err() != nil:
+		t.Fatalf("fly %s did not finish within 10s", strings.Join(args, " "))
 	case errors.As(err, &exitErr):
 		res.code = exitErr.ExitCode()
 	case err != nil:
@@ -167,6 +175,38 @@ func TestNoSiteIsAnError(t *testing.T) {
 	}
 	if res.stdout != "" {
 		t.Errorf("stdout = %q, want errors on stderr only", res.stdout)
+	}
+}
+
+func TestOutsideHomeDoesNotHang(t *testing.T) {
+	e := newEnv(t)
+	outside := testutil.TempDir(t) // not inside e.home
+
+	// run fails the test if fly does not stop.
+	res := e.run(t, outside, "start")
+	if res.code != 1 || !strings.Contains(res.stderr, "no docker-compose.yml file found") {
+		t.Errorf("got exit %d, stderr %q, want exit 1 and the no-site error", res.code, res.stderr)
+	}
+}
+
+func TestDomainFlag(t *testing.T) {
+	e := newEnv(t)
+	outside := testutil.TempDir(t)
+
+	res := e.run(t, outside, "start", "--domain", "example.com")
+	if res.code != 0 {
+		t.Fatalf("--domain example.com: exit code = %d, want 0 (stderr %q)", res.code, res.stderr)
+	}
+
+	for _, bad := range []string{"../", "..", "example.com/../..", "a/b"} {
+		res := e.run(t, outside, "start", "--domain", bad)
+		if res.code != 1 || !strings.Contains(res.stderr, "invalid domain") {
+			t.Errorf("--domain %q: exit %d, stderr %q, want exit 1 and an invalid domain error", bad, res.code, res.stderr)
+		}
+	}
+
+	if calls := e.docker.Calls(t); len(calls) != 1 {
+		t.Errorf("docker calls = %q, want only the call for example.com", calls)
 	}
 }
 

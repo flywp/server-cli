@@ -25,16 +25,12 @@ Or specify the domain name:
 // siteComposePath returns the compose file of the site selected by --domain
 // or by the current directory.
 func siteComposePath() (string, error) {
-	composePath := utils.FindComposeFile(domain)
-	if composePath != "" {
-		return composePath, nil
+	composePath, err := utils.FindComposeFile(domain)
+	if errors.Is(err, utils.ErrComposeNotFound) && domain == "" {
+		return "", errNoSite
 	}
 
-	if domain != "" {
-		return "", fmt.Errorf("no docker-compose.yml file found for domain %q", domain)
-	}
-
-	return "", errNoSite
+	return composePath, err
 }
 
 var wpCmd = &cobra.Command{
