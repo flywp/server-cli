@@ -110,6 +110,22 @@ fly sites stop              # stops all sites
 fly sites restart           # stops and starts all sites
 ```
 
+## Development
+
+Go 1.27 or later is required (`go.mod` selects the toolchain). The Makefile holds the common tasks:
+
+```bash
+make build      # builds bin/fly with the version from git
+make test       # go test ./... -race
+make lint       # golangci-lint (pinned version, built with the module's Go)
+make vuln       # govulncheck
+make check      # fmt-check, vet, lint, test and vuln: run this before each merge
+make release    # static linux/amd64 and linux/arm64 archives + checksums.txt in build/
+make help       # lists all targets
+```
+
+`make release VERSION=v0.2.0` stamps a specific version. The release archives must keep the names `fly-linux-<arch>.tar.gz` with the binary `fly-linux-<arch>` inside: installed CLIs look for these names when they run `fly update`.
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
