@@ -1,0 +1,196 @@
+package main
+
+// End-to-end tests: build the fly binary once and run it against a fake
+// docker command, so that exit codes and output are the ones users see.
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/flywp/server-cli/internal/testutil"
+)
+
+var flyBin string
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "fly-e2e")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	flyBin = filepath.Join(dir, "fly")
+	if out, err := exec.Command("go", "build", "-o", flyBin, ".").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "building fly: %v\n%s", err, out)
+		os.Exit(1)
+	}
+
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+type result struct {
+	code           int
+	stdout, stderr string
+}
+
+// env is a test environment: a home directory with one site in it and a
+// fake docker command.
+type env struct {
+	home, site string
+	docker     *testutil.FakeDocker
+	vars       []string
+}
+
+func newEnv(t *testing.T, services ...string) *env {
+	t.Helper()
+
+	if os.Geteuid() == 0 {
+		t.Skip("fly refuses to run as root")
+	}
+	if len(services) == 0 {
+		services = []string{"php", "nginx"}
+	}
+
+	home := testutil.TempDir(t)
+	site := filepath.Join(home, "example.com")
+	testutil.WriteSite(t, site, services...)
+
+	return &env{home: home, site: site, docker: testutil.NewFakeDocker(t)}
+}
+
+// run executes fly in dir with the test environment.
+func (e *env) run(t *testing.T, dir string, args ...string) result {
+	t.Helper()
+
+	cmd := exec.Command(flyBin, args...)
+	cmd.Dir = dir
+	cmd.Env = append(append(e.docker.Env(), "HOME="+e.home), e.vars...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+
+	err := cmd.Run()
+	res := result{stdout: stdout.String(), stderr: stderr.String()}
+
+	var exitErr *exec.ExitError
+	switch {
+	case errors.As(err, &exitErr):
+		res.code = exitErr.ExitCode()
+	case err != nil:
+		t.Fatalf("running fly %s: %v", strings.Join(args, " "), err)
+	}
+
+	return res
+}
+
+func TestChildExitStatusPassesThrough(t *testing.T) {
+	e := newEnv(t)
+	e.vars = append(e.vars, testutil.EnvExit+"=7")
+
+	res := e.run(t, e.site, "exec", "--", "php", "sh", "-c", "exit 7")
+	if res.code != 7 {
+		t.Errorf("exit code = %d, want 7 (stderr %q)", res.code, res.stderr)
+	}
+	if res.stderr != "" {
+		t.Errorf("stderr = %q, want nothing: the child reports its own error", res.stderr)
+	}
+}
+
+func TestDockerFailureExitsNonZero(t *testing.T) {
+	commands := [][]string{
+		{"start"},
+		{"stop"},
+		{"restart"},
+		{"restart", "php"},
+		{"wp", "--", "plugin", "list"},
+		{"exec", "--", "php", "ls"},
+		{"logs"},
+		{"base", "start"},
+		{"base", "stop"},
+		{"base", "restart"},
+	}
+
+	for _, args := range commands {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			e := newEnv(t)
+			e.vars = append(e.vars, testutil.EnvExit+"=3")
+
+			res := e.run(t, e.site, args...)
+			if res.code != 3 {
+				t.Errorf("exit code = %d, want 3 (stderr %q)", res.code, res.stderr)
+			}
+			if strings.Contains(res.stdout, "successfully") {
+				t.Errorf("stdout = %q, want no success message after a failure", res.stdout)
+			}
+			if strings.Contains(res.stdout+res.stderr, "%!") {
+				t.Errorf("output has a format error: stdout %q, stderr %q", res.stdout, res.stderr)
+			}
+		})
+	}
+}
+
+func TestSuccessExitsZero(t *testing.T) {
+	e := newEnv(t)
+
+	res := e.run(t, e.site, "start")
+	if res.code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr %q)", res.code, res.stderr)
+	}
+
+	want := "compose -f " + filepath.Join(e.site, "docker-compose.yml") + " up -d"
+	if calls := e.docker.Calls(t); len(calls) != 1 || calls[0] != want {
+		t.Errorf("docker calls = %q, want [%q]", calls, want)
+	}
+}
+
+func TestNoSiteIsAnError(t *testing.T) {
+	e := newEnv(t)
+	dir := filepath.Join(e.home, "not-a-site")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res := e.run(t, dir, "start")
+	if res.code != 1 {
+		t.Errorf("exit code = %d, want 1", res.code)
+	}
+	if !strings.Contains(res.stderr, "no docker-compose.yml file found") {
+		t.Errorf("stderr = %q, want the no-site error", res.stderr)
+	}
+	if res.stdout != "" {
+		t.Errorf("stdout = %q, want errors on stderr only", res.stdout)
+	}
+}
+
+func TestUsageErrors(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"start", "--bogus"}, want: "Run 'fly start --help' for usage"},
+		{args: []string{"exec"}, want: "requires at least 1 arg"},
+		{args: []string{"update"}, want: "sudo fly update"},
+	}
+
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
+			e := newEnv(t)
+
+			res := e.run(t, e.site, tt.args...)
+			if res.code != 1 {
+				t.Errorf("exit code = %d, want 1", res.code)
+			}
+			if !strings.Contains(res.stderr, tt.want) {
+				t.Errorf("stderr = %q, want it to contain %q", res.stderr, tt.want)
+			}
+		})
+	}
+}

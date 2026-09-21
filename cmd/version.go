@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -24,22 +25,19 @@ var versionCmd = &cobra.Command{
 var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update fly-cli to the latest version",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if os.Geteuid() != 0 {
-			fmt.Println("Error: The update command must be run as root.")
-			fmt.Println("Please run 'sudo fly update'")
-			return
+			return errors.New("the update command must be run as root, please run 'sudo fly update'")
 		}
 
 		latestVersion, hasUpdate, err := utils.CheckForUpdates()
 		if err != nil {
-			fmt.Println("Error checking for updates:", err)
-			return
+			return fmt.Errorf("checking for updates: %w", err)
 		}
 
 		if !hasUpdate {
 			fmt.Println("You are already running the latest version.")
-			return
+			return nil
 		}
 
 		fmt.Printf("New version available: %s\n", latestVersion)
@@ -47,20 +45,21 @@ var updateCmd = &cobra.Command{
 		if !yesFlag {
 			fmt.Print("Do you want to update? (y/n): ")
 			var response string
-			fmt.Scanln(&response)
+			// An empty or unreadable answer cancels the update.
+			_, _ = fmt.Scanln(&response)
 			if response != "y" && response != "Y" {
 				fmt.Println("Update cancelled.")
-				return
+				return nil
 			}
 		}
 
 		fmt.Println("Updating...")
 		if err := utils.SelfUpdate(); err != nil {
-			fmt.Println("Error updating:", err)
-		} else {
-			fmt.Println("Update successful. Please restart fly cli.")
-			os.Exit(0)
+			return fmt.Errorf("updating: %w", err)
 		}
+
+		fmt.Println("Update successful. Please restart fly cli.")
+		return nil
 	},
 }
 

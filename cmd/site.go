@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"os"
+	"errors"
+	"fmt"
 
-	"github.com/fatih/color"
 	"github.com/flywp/server-cli/internal/docker"
 	"github.com/flywp/server-cli/internal/utils"
 	"github.com/spf13/cobra"
@@ -12,19 +12,41 @@ import (
 // Define domain flag as a global variable
 var domain string
 
+var errNoSite = errors.New(`no docker-compose.yml file found
+
+You are not inside a site directory.
+Please run this command from inside a site directory, e.g:
+  cd ~/example.com
+  fly start
+
+Or specify the domain name:
+  fly start --domain example.com`)
+
+// siteComposePath returns the compose file of the site selected by --domain
+// or by the current directory.
+func siteComposePath() (string, error) {
+	composePath := utils.FindComposeFile(domain)
+	if composePath != "" {
+		return composePath, nil
+	}
+
+	if domain != "" {
+		return "", fmt.Errorf("no docker-compose.yml file found for domain %q", domain)
+	}
+
+	return "", errNoSite
+}
+
 var wpCmd = &cobra.Command{
 	Use:   "wp",
 	Short: "Run wp-cli commands",
-	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile(domain)
-		if composePath == "" {
-			utils.ShowNoComposeError()
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		composePath, err := siteComposePath()
+		if err != nil {
+			return err
 		}
 
-		if err := docker.RunWPCLI(composePath, args); err != nil {
-			color.Red("Error running wp-cli: %s", err)
-		}
+		return docker.RunWPCLI(composePath, args)
 	},
 }
 
@@ -32,16 +54,16 @@ var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the site",
 	Long:  "Start the Docker container for the site",
-	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile(domain)
-		if composePath == "" {
-			utils.ShowNoComposeError()
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		composePath, err := siteComposePath()
+		if err != nil {
+			return err
 		}
 
 		if err := docker.RunCompose(composePath, "up", "-d"); err != nil {
-			color.Red("Error starting container:", err)
+			return fmt.Errorf("starting site: %w", err)
 		}
+		return nil
 	},
 }
 
@@ -49,16 +71,16 @@ var stopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the site",
 	Long:  "Stop the Docker container for the site",
-	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile(domain)
-		if composePath == "" {
-			utils.ShowNoComposeError()
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		composePath, err := siteComposePath()
+		if err != nil {
+			return err
 		}
 
 		if err := docker.RunCompose(composePath, "down"); err != nil {
-			color.Red("Error stopping container:", err)
+			return fmt.Errorf("stopping site: %w", err)
 		}
+		return nil
 	},
 }
 
@@ -67,39 +89,27 @@ var restartCmd = &cobra.Command{
 	Short: "Restart the site or a specific container",
 	Long:  "Restart the Docker containers for the site. Optionally, specify a container to restart only that container.",
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile(domain)
-		if composePath == "" {
-			utils.ShowNoComposeError()
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		composePath, err := siteComposePath()
+		if err != nil {
+			return err
 		}
 
-		if len(args) == 1 {
-			containerName := args[0]
-			if err := docker.RunCompose(composePath, "restart", containerName); err != nil {
-				color.Red("Error restarting container:", err)
-			}
-		} else {
-			if err := docker.RunCompose(composePath, "restart"); err != nil {
-				color.Red("Error restarting Docker Compose setup:", err)
-			}
+		if err := docker.RunCompose(composePath, append([]string{"restart"}, args...)...); err != nil {
+			return fmt.Errorf("restarting site: %w", err)
 		}
+		return nil
 	},
 }
 
 var execCmd = &cobra.Command{
-	Use:   "exec",
+	Use:   "exec [service] command [args...]",
 	Short: "Execute a command in the Docker container",
-	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile(domain)
-		if composePath == "" {
-			utils.ShowNoComposeError()
-			return
-		}
-
-		if len(args) == 0 {
-			color.Yellow("No command provided")
-			return
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		composePath, err := siteComposePath()
+		if err != nil {
+			return err
 		}
 
 		// if the next argument is "php", "nginx" or "openlitespeed", use it as the service name
@@ -114,9 +124,7 @@ var execCmd = &cobra.Command{
 
 		composeArgs = append(composeArgs, args...)
 
-		if err := docker.RunCompose(composePath, composeArgs...); err != nil {
-			color.Red("Error executing command: %v\n", err)
-		}
+		return docker.RunCompose(composePath, composeArgs...)
 	},
 }
 
@@ -125,22 +133,13 @@ var logsCmd = &cobra.Command{
 	Short: "Show logs of the Docker container",
 	Long:  `Show logs of Docker container(s). If no container is specified, it shows logs for all containers.`,
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		composePath := utils.FindComposeFile(domain)
-		if composePath == "" {
-			utils.ShowNoComposeError()
-			os.Exit(1)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		composePath, err := siteComposePath()
+		if err != nil {
+			return err
 		}
 
-		composeArgs := []string{"logs"}
-		if len(args) == 1 {
-			composeArgs = append(composeArgs, args[0])
-		}
-
-		if err := docker.RunCompose(composePath, composeArgs...); err != nil {
-			color.Red("Error showing logs: %v\n", err)
-			os.Exit(1)
-		}
+		return docker.RunCompose(composePath, append([]string{"logs"}, args...)...)
 	},
 }
 

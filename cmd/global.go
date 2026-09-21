@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -84,90 +85,67 @@ var sitesCmd = &cobra.Command{
 var sitesStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start all sites",
-	Run: func(cmd *cobra.Command, args []string) {
-		startAllSites()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return forEachSite("Starting", "up", "-d")
 	},
 }
 
 var sitesStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop all sites",
-	Run: func(cmd *cobra.Command, args []string) {
-		stopAllSites()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return forEachSite("Stopping", "down")
 	},
 }
 
 var restartSitesCmd = &cobra.Command{
 	Use:   "restart",
 	Short: "Restart all sites",
-	Run: func(cmd *cobra.Command, args []string) {
-		stopAllSites()
-		startAllSites()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Start the sites even if some of them failed to stop.
+		stopErr := forEachSite("Stopping", "down")
+		startErr := forEachSite("Starting", "up", "-d")
+		return errors.Join(stopErr, startErr)
 	},
 }
 
-func startAllSites() {
-	sitesDir := "/home/fly"
-	foundSite := false
+// sitesDir holds one directory per site, each with its own docker-compose.yml.
+var sitesDir = "/home/fly"
 
+// forEachSite runs docker compose with args for every site in sitesDir.
+// It continues after a failed site and returns all failures together.
+func forEachSite(verb string, args ...string) error {
 	entries, err := os.ReadDir(sitesDir)
 	if err != nil {
-		color.Red("Error reading directory %s: %v\n", sitesDir, err)
-		return
+		return fmt.Errorf("reading sites directory: %w", err)
 	}
 
+	var errs []error
+	foundSite := false
 	for _, entry := range entries {
-		if entry.IsDir() {
-			// Skip hidden directories
-			if strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
+		// Skip files and hidden directories
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
 
-			path := filepath.Join(sitesDir, entry.Name())
-			composePath := filepath.Join(path, "docker-compose.yml")
-			if _, err := os.Stat(composePath); err == nil {
-				color.Yellow("Starting site in %s\n", filepath.Base(path))
-				docker.RunCompose(composePath, "up", "-d")
-				foundSite = true
-			}
+		composePath := filepath.Join(sitesDir, entry.Name(), "docker-compose.yml")
+		if _, err := os.Stat(composePath); err != nil {
+			continue
+		}
+
+		foundSite = true
+		color.Yellow("%s site in %s", verb, entry.Name())
+		if err := docker.RunCompose(composePath, args...); err != nil {
+			// %v, not %w: a failed child process must not hide this summary.
+			errs = append(errs, fmt.Errorf("%s: %v", entry.Name(), err))
 		}
 	}
 
 	if !foundSite {
-		fmt.Println("No sites found to start.")
-	}
-}
-
-func stopAllSites() {
-	sitesDir := "/home/fly"
-	foundSite := false
-
-	entries, err := os.ReadDir(sitesDir)
-	if err != nil {
-		color.Red("Error reading directory %s: %v\n", sitesDir, err)
-		return
+		fmt.Println("No sites found.")
 	}
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			// Skip hidden directories
-			if strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-
-			path := filepath.Join(sitesDir, entry.Name())
-			composePath := filepath.Join(path, "docker-compose.yml")
-			if _, err := os.Stat(composePath); err == nil {
-				color.Yellow("Stopping site in %s\n", filepath.Base(path))
-				docker.RunCompose(composePath, "down")
-				foundSite = true
-			}
-		}
-	}
-
-	if !foundSite {
-		fmt.Println("No sites found to stop.")
-	}
+	return errors.Join(errs...)
 }
 
 func init() {
