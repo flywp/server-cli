@@ -199,4 +199,5 @@ func init() {
 	rootCmd.AddCommand(restartCmd)
 	rootCmd.AddCommand(execCmd)
 	rootCmd.AddCommand(logsCmd)
+	requireDocker(wpCmd, startCmd, stopCmd, restartCmd, execCmd, logsCmd)
 }

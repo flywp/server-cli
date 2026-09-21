@@ -70,6 +70,7 @@ func init() {
 	baseCmd.AddCommand(baseStartCmd)
 	baseCmd.AddCommand(baseStopCmd)
 	baseCmd.AddCommand(baseRestartCmd)
+	requireDocker(baseStartCmd, baseStopCmd, baseRestartCmd)
 
 	rootCmd.AddCommand(baseCmd)
 }

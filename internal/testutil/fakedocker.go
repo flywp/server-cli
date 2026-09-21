@@ -16,7 +16,8 @@ const (
 	EnvLog = "FAKE_DOCKER_LOG"
 	// EnvExit is the exit status of "docker compose" calls (default 0).
 	EnvExit = "FAKE_DOCKER_EXIT"
-	// EnvMode selects a failure mode: "no-compose" or "daemon-down".
+	// EnvMode selects a failure mode: "no-compose", "daemon-down" or
+	// "daemon-hang".
 	EnvMode = "FAKE_DOCKER_MODE"
 )
 
@@ -29,6 +30,11 @@ no-compose)
 		exit 1
 	fi
 	;;
+daemon-hang)
+	if [ "$1" = version ]; then
+		exec sleep 30
+	fi
+	;;
 daemon-down)
 	if [ "$1 $2" != "compose version" ]; then
 		echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2
@@ -37,7 +43,7 @@ daemon-down)
 	;;
 esac
 case "$1 $2" in
-"compose version") echo "Docker Compose version v2.40.0"; exit 0 ;;
+"compose version") echo "2.40.0"; exit 0 ;;
 "version "*) echo "29.0.0"; exit 0 ;;
 esac
 exit "${FAKE_DOCKER_EXIT:-0}"
@@ -93,6 +99,21 @@ func (f *FakeDocker) Calls(t *testing.T) []string {
 	}
 
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+}
+
+// ComposeCalls returns the "docker compose -f" calls so far, without the
+// calls that check whether Docker is available.
+func (f *FakeDocker) ComposeCalls(t *testing.T) []string {
+	t.Helper()
+
+	var calls []string
+	for _, c := range f.Calls(t) {
+		if strings.HasPrefix(c, "compose -f ") {
+			calls = append(calls, c)
+		}
+	}
+
+	return calls
 }
 
 // WriteSite creates dir with a docker-compose.yml that defines services and

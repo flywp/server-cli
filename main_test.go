@@ -154,7 +154,7 @@ func TestSuccessExitsZero(t *testing.T) {
 	}
 
 	want := "compose -f " + filepath.Join(e.site, "docker-compose.yml") + " up -d"
-	if calls := e.docker.Calls(t); len(calls) != 1 || calls[0] != want {
+	if calls := e.docker.ComposeCalls(t); len(calls) != 1 || calls[0] != want {
 		t.Errorf("docker calls = %q, want [%q]", calls, want)
 	}
 }
@@ -205,7 +205,7 @@ func TestDomainFlag(t *testing.T) {
 		}
 	}
 
-	if calls := e.docker.Calls(t); len(calls) != 1 {
+	if calls := e.docker.ComposeCalls(t); len(calls) != 1 {
 		t.Errorf("docker calls = %q, want only the call for example.com", calls)
 	}
 }
@@ -277,7 +277,7 @@ func TestFlagsPassThrough(t *testing.T) {
 			}
 
 			want := "compose -f " + filepath.Join(e.site, "docker-compose.yml") + " " + tt.want
-			if calls := e.docker.Calls(t); len(calls) != 1 || calls[0] != want {
+			if calls := e.docker.ComposeCalls(t); len(calls) != 1 || calls[0] != want {
 				t.Errorf("docker calls = %q, want [%q]", calls, want)
 			}
 		})
@@ -290,6 +290,76 @@ func TestExecNeedsACommand(t *testing.T) {
 	res := e.run(t, e.site, "exec", "php")
 	if res.code != 1 || !strings.Contains(res.stderr, "no command given") {
 		t.Errorf("exit %d, stderr %q, want exit 1 and a missing-command error", res.code, res.stderr)
+	}
+}
+
+func TestDockerUnavailable(t *testing.T) {
+	modes := []struct {
+		name     string
+		mode     string // fake docker failure mode
+		noDocker bool   // no docker command in PATH at all
+		want     string
+	}{
+		{name: "no docker CLI", noDocker: true, want: "Warning: Docker CLI is not available"},
+		{name: "no compose plugin", mode: "no-compose", want: "Warning: Docker Compose plugin is not available"},
+		{name: "daemon down", mode: "daemon-down", want: "Warning: Docker daemon is not available"},
+	}
+	commands := [][]string{
+		{"start"},
+		{"wp", "plugin", "list"},
+		{"exec", "php", "ls"},
+		{"base", "stop"},
+		{"sites", "start"},
+	}
+
+	for _, m := range modes {
+		for _, args := range commands {
+			t.Run(m.name+"/"+strings.Join(args, " "), func(t *testing.T) {
+				e := newEnv(t)
+				if m.noDocker {
+					e.vars = append(e.vars, "PATH="+testutil.TempDir(t))
+				} else {
+					e.vars = append(e.vars, testutil.EnvMode+"="+m.mode)
+				}
+
+				res := e.run(t, e.site, args...)
+				if res.code != 69 {
+					t.Errorf("exit code = %d, want 69", res.code)
+				}
+				lines := strings.Split(strings.TrimSpace(res.stderr), "\n")
+				if len(lines) != 1 || !strings.HasPrefix(lines[0], m.want) {
+					t.Errorf("stderr = %q, want one line that starts with %q", res.stderr, m.want)
+				}
+				if strings.Contains(res.stderr, "exec:") || strings.Contains(res.stdout, "successfully") {
+					t.Errorf("output has a raw error or a false success: stdout %q, stderr %q", res.stdout, res.stderr)
+				}
+				if calls := e.docker.ComposeCalls(t); len(calls) != 0 {
+					t.Errorf("compose calls = %q, want none", calls)
+				}
+			})
+		}
+
+		t.Run(m.name+"/status", func(t *testing.T) {
+			e := newEnv(t)
+			if m.noDocker {
+				e.vars = append(e.vars, "PATH="+testutil.TempDir(t))
+			} else {
+				e.vars = append(e.vars, testutil.EnvMode+"="+m.mode)
+			}
+
+			res := e.run(t, e.site, "status")
+			if res.code != 0 {
+				t.Errorf("exit code = %d, want 0", res.code)
+			}
+			for _, part := range []string{"Docker CLI is", "Docker Compose plugin is", "Docker daemon is"} {
+				if !strings.Contains(res.stdout, part) {
+					t.Errorf("stdout = %q, want a line for %q", res.stdout, part)
+				}
+			}
+			if !strings.Contains(res.stdout, strings.TrimPrefix(m.want, "Warning: ")) {
+				t.Errorf("stdout = %q, want %q", res.stdout, strings.TrimPrefix(m.want, "Warning: "))
+			}
+		})
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 
 	"github.com/fatih/color"
+	"github.com/flywp/server-cli/internal/docker"
 	"github.com/spf13/cobra"
 )
 
@@ -24,8 +25,26 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("you should not run this command as root")
 		}
 
+		if cmd.Annotations[requiresAnnotation] == "docker" {
+			return docker.Check(cmd.Context())
+		}
+
 		return nil
 	},
+}
+
+// requiresAnnotation names what a command needs to run. The root command
+// checks it before the command runs.
+const requiresAnnotation = "requires"
+
+// requireDocker marks cmds as commands that need Docker.
+func requireDocker(cmds ...*cobra.Command) {
+	for _, c := range cmds {
+		if c.Annotations == nil {
+			c.Annotations = map[string]string{}
+		}
+		c.Annotations[requiresAnnotation] = "docker"
+	}
 }
 
 // Execute runs the root command and exits with the resulting status code.
@@ -37,6 +56,13 @@ func Execute() {
 func exitCode(err error, stderr io.Writer) int {
 	if err == nil {
 		return 0
+	}
+
+	// Docker is down or not installed: show one warning, not a raw error.
+	var unavailable *docker.UnavailableError
+	if errors.As(err, &unavailable) {
+		_, _ = color.New(color.FgYellow).Fprintf(stderr, "Warning: %v\n", unavailable)
+		return unavailable.ExitCode()
 	}
 
 	// A child process (docker compose, wp-cli) has already reported its own
