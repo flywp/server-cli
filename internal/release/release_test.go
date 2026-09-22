@@ -121,10 +121,7 @@ func TestLatestReleaseErrors(t *testing.T) {
 func TestAssetURL(t *testing.T) {
 	release := &GithubRelease{TagName: "v0.2.0"}
 	for _, name := range []string{"fly-linux-amd64.tar.gz", "fly-linux-arm64.tar.gz"} {
-		release.Assets = append(release.Assets, struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-		}{Name: name, BrowserDownloadURL: "https://example.com/" + name})
+		release.Assets = append(release.Assets, Asset{Name: name, BrowserDownloadURL: "https://example.com/" + name})
 	}
 
 	tests := []struct{ goos, goarch, want string }{

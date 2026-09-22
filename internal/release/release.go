@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,12 +33,16 @@ var httpClient = &http.Client{Timeout: 60 * time.Second}
 // maxBinarySize limits the size of the binary in a release archive.
 const maxBinarySize = 200 << 20
 
+// GithubRelease is a release in the GitHub API.
 type GithubRelease struct {
-	TagName string `json:"tag_name"`
-	Assets  []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-	} `json:"assets"`
+	TagName string  `json:"tag_name"`
+	Assets  []Asset `json:"assets"`
+}
+
+// Asset is a file of a release.
+type Asset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
 // Update compares the latest release with the running version.
@@ -124,13 +129,17 @@ func get(ctx context.Context, url string) (*http.Response, error) {
 	return resp, nil
 }
 
-// SelfUpdate replaces the running binary with the binary from release.
-func SelfUpdate(ctx context.Context, release *GithubRelease) error {
-	assetURL := assetURL(release, runtime.GOOS, runtime.GOARCH)
-	if assetURL == "" {
-		return fmt.Errorf("no suitable binary found for this system (OS: %s, ARCH: %s)", runtime.GOOS, runtime.GOARCH)
-	}
+// ChecksumsAsset is the checksum file of each release: one line for each
+// archive, "<sha256>  <file name>" (the output of sha256sum).
+const ChecksumsAsset = "checksums.txt"
 
+// selfUpdateTimeout limits the download of an update.
+const selfUpdateTimeout = 10 * time.Minute
+
+// SelfUpdate replaces the running binary with the binary from release. It
+// installs the archive only when its sha256 agrees with the checksum file of
+// the release.
+func SelfUpdate(ctx context.Context, release *GithubRelease) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("finding the current executable: %w", err)
@@ -140,13 +149,61 @@ func SelfUpdate(ctx context.Context, release *GithubRelease) error {
 		return fmt.Errorf("resolving symlinks: %w", err)
 	}
 
-	resp, err := get(ctx, assetURL)
+	return selfUpdate(ctx, release, exe, runtime.GOOS, runtime.GOARCH)
+}
+
+func selfUpdate(ctx context.Context, release *GithubRelease, exe, goos, goarch string) error {
+	ctx, cancel := context.WithTimeout(ctx, selfUpdateTimeout)
+	defer cancel()
+
+	archiveURL := assetURL(release, goos, goarch)
+	if archiveURL == "" {
+		return fmt.Errorf("no suitable binary found for this system (OS: %s, ARCH: %s)", goos, goarch)
+	}
+
+	name := BinaryName(goos, goarch)
+	sum, err := checksum(ctx, release, name+".tar.gz")
 	if err != nil {
-		return fmt.Errorf("downloading update: %w", err)
+		return err
+	}
+
+	archive, err := Download(ctx, archiveURL, sum, filepath.Dir(exe))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(archive) }()
+
+	return Install(archive, exe, name)
+}
+
+// checksum returns the sha256 of the release file name from the checksum
+// file of the release.
+func checksum(ctx context.Context, release *GithubRelease, name string) (string, error) {
+	url := asset(release, ChecksumsAsset)
+	if url == "" {
+		return "", fmt.Errorf("release %s has no %s, so its download cannot be checked", release.TagName, ChecksumsAsset)
+	}
+
+	resp, err := get(ctx, url)
+	if err != nil {
+		return "", fmt.Errorf("downloading %s: %w", ChecksumsAsset, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	return replaceBinary(exe, resp.Body, BinaryName(runtime.GOOS, runtime.GOARCH))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("downloading %s: %w", ChecksumsAsset, err)
+	}
+
+	for line := range strings.Lines(string(data)) {
+		// sha256sum marks a file that it read in binary mode with "*".
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
+			return fields[0], nil
+		}
+	}
+
+	return "", fmt.Errorf("%s of release %s has no line for %s", ChecksumsAsset, release.TagName, name)
 }
 
 // BinaryName is the name of the binary in a release archive. Releases must
@@ -162,10 +219,14 @@ func assetURL(release *GithubRelease, goos, goarch string) string {
 		return ""
 	}
 
-	expectedName := BinaryName(goos, goarch) + ".tar.gz"
-	for _, asset := range release.Assets {
-		if asset.Name == expectedName {
-			return asset.BrowserDownloadURL
+	return asset(release, BinaryName(goos, goarch)+".tar.gz")
+}
+
+// asset returns the download URL of the release file name, or "".
+func asset(release *GithubRelease, name string) string {
+	for _, a := range release.Assets {
+		if a.Name == name {
+			return a.BrowserDownloadURL
 		}
 	}
 
