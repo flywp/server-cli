@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/flywp/server-cli/internal/agent/wire"
@@ -105,7 +106,7 @@ func (a *agent) resolve() {
 			continue
 		}
 
-		if c.Verb == wire.VerbUpdate && !versionMatches(c.Target, version.Version) {
+		if cmp, ok := compareVersions(version.Version, c.Target); c.Verb == wire.VerbUpdate && (!ok || cmp < 0) {
 			a.addEvent(wire.EventCommandFailed, c.ID, &wire.EventData{
 				Version: version.Version,
 				Error:   fmt.Sprintf("the agent runs %s, not %s, after the update", version.Version, c.Target),
@@ -178,12 +179,17 @@ func (a *agent) update(ctx context.Context, c wire.Command, log *slog.Logger) (e
 		return false
 	}
 
-	// Only the same version skips the download. An older target is a
-	// rollback: the control plane decides which version a server runs.
-	if args.Version == version.Version {
+	// The agent never downgrades: a bad release is fixed with a newer one.
+	// The same version completes the command; an older target fails it, so
+	// the control plane sees that its version was not installed.
+	switch cmp, ok := compareVersions(version.Version, args.Version); {
+	case ok && cmp == 0:
 		log.Info("the agent already runs this version", "version", version.Version)
 		a.addEvent(wire.EventCommandCompleted, c.ID, &wire.EventData{Version: version.Version})
 		a.record(c, args.Version)
+		return false
+	case ok && cmp > 0:
+		a.fail(c, fmt.Errorf("the agent runs %s, newer than %s; it does not downgrade", version.Version, args.Version))
 		return false
 	}
 
@@ -247,19 +253,25 @@ var updateBinary = func(ctx context.Context, args wire.UpdateArgs) error {
 	return release.Install(archive, exe, release.BinaryName(runtime.GOOS, runtime.GOARCH))
 }
 
-// versionMatches reports whether the new process, which runs the version
-// running, completes an update to target: the same tag, or a newer release
-// (for example when fly update installed a newer release at the same time).
-// A dev tag (v0.2.0-dev.1a2b3c4) has no order, so it matches only the same tag.
-func versionMatches(target, running string) bool {
-	if running == target {
-		return true
+// compareVersions compares the versions a and b (release tags, for example
+// v0.2.1) with semver: -1, 0 or +1. ok is false when they have no order:
+// a version that is not semver (for example "dev"), or two dev tags of one
+// release (v0.2.0-dev.1a2b3c4 and v0.2.0-dev.9f8e7d6), whose commit hashes
+// have no order. Equal strings always compare as 0.
+func compareVersions(a, b string) (cmp int, ok bool) {
+	if a == b {
+		return 0, true
+	}
+	if !semver.IsValid(a) || !semver.IsValid(b) {
+		return 0, false
 	}
 
-	isRelease := func(v string) bool {
-		return semver.IsValid(v) && semver.Prerelease(v) == "" && semver.Build(v) == ""
+	pa, pb := semver.Prerelease(a), semver.Prerelease(b)
+	if pa != "" && pb != "" && strings.TrimSuffix(semver.Canonical(a), pa) == strings.TrimSuffix(semver.Canonical(b), pb) {
+		return 0, false
 	}
-	return isRelease(target) && isRelease(running) && semver.Compare(running, target) > 0
+
+	return semver.Compare(a, b), true
 }
 
 // PollCommands gets the open commands (contract section 5).
