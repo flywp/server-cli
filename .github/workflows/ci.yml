@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  # All pull requests: stacked pull requests target each other, not develop.
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push cancels the older run for the same branch or pull request.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out the repository
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0  # git describe needs the tags for the version
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.27'
+        check-latest: true
+
+    - name: Run the checks
+      run: make check
+
+    - name: Build the release archives
+      run: make release

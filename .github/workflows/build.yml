@@ -1,71 +1,60 @@
-name: Build and Release
+name: Release
 
 on:
   push:
     tags:
-      - 'v*.*.*'  # Matches tags like v1.0.0, v2.1.3, etc.
+      - 'v*.*.*'  # Matches tags like v1.0.0, v2.1.3, v0.2.0-rc.1
+
+permissions:
+  contents: write  # create the release and upload its assets
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
 
     steps:
     - name: Check out the repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0  # the tag check needs main, and git describe needs the tags
+
+    - name: Check that the tag is on main
+      run: |
+        git fetch --no-tags origin main
+        if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+          echo "::error::Tag $GITHUB_REF_NAME is not on main. Release tags must be on the release branch."
+          exit 1
+        fi
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v7
       with:
         go-version: '1.27'
         check-latest: true
 
-    - name: Run build script
-      run: bash ./build.sh
+    - name: Run the checks
+      run: make check
 
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-artifacts
-        path: build/*.tar.gz
+    # Installed CLIs download fly-linux-<arch>.tar.gz and look for the binary
+    # fly-linux-<arch> in it. Do not change these asset names.
+    - name: Build the release archives
+      run: make release VERSION="$GITHUB_REF_NAME"
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Download build artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: build-artifacts
-        path: build
-
-    - name: Create GitHub Release
-      id: create_release
-      uses: actions/create-release@v1
+    - name: Create the GitHub release
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
-
-    - name: Upload Release Assets for amd64
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: build/fly-linux-amd64.tar.gz
-        asset_name: fly-linux-amd64.tar.gz
-        asset_content_type: application/gzip
-
-    - name: Upload Release Assets for arm64
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: build/fly-linux-arm64.tar.gz
-        asset_name: fly-linux-arm64.tar.gz
-        asset_content_type: application/gzip
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # A pre-release (for example v0.2.0-rc.1) is not returned by
+        # /releases/latest, so installed CLIs do not update to it.
+        prerelease=()
+        if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+          prerelease=(--prerelease)
+        fi
+        gh release create "$GITHUB_REF_NAME" \
+          build/fly-linux-amd64.tar.gz \
+          build/fly-linux-arm64.tar.gz \
+          build/checksums.txt \
+          --title "$GITHUB_REF_NAME" \
+          --generate-notes \
+          --verify-tag \
+          "${prerelease[@]}"

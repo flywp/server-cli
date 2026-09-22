@@ -119,12 +119,25 @@ make build      # builds bin/fly with the version from git
 make test       # go test ./... -race
 make lint       # golangci-lint (pinned version, built with the module's Go)
 make vuln       # govulncheck
-make check      # fmt-check, vet, lint, test and vuln: run this before each merge
+make check      # fmt-check, vet, lint, test and vuln (CI runs the same)
 make release    # static linux/amd64 and linux/arm64 archives + checksums.txt in build/
 make help       # lists all targets
 ```
 
 `make release VERSION=v0.2.0` stamps a specific version. The release archives must keep the names `fly-linux-<arch>.tar.gz` with the binary `fly-linux-<arch>` inside: installed CLIs look for these names when they run `fly update`.
+
+CI runs `make check` and `make release` on every pull request and on every push to `develop` and `main`.
+
+### Releasing
+
+`main` is the release branch. To publish a release, tag a commit on `main` and push the tag:
+
+```bash
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
+```
+
+The Release workflow checks that the tag is on `main`, runs `make check`, builds the archives with `make release`, and creates the GitHub release with both archives and `checksums.txt`. A tag with a pre-release suffix, such as `v0.2.0-rc.1`, becomes a pre-release, so installed CLIs do not update to it.
 
 ## License
 
