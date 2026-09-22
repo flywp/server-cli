@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -259,5 +260,76 @@ func TestReplaceBinaryKeepsTheOwner(t *testing.T) {
 	}
 	if st := info.Sys().(*syscall.Stat_t); st.Uid != 1000 || st.Gid != 1000 {
 		t.Errorf("owner = %d:%d, want 1000:1000", st.Uid, st.Gid)
+	}
+}
+
+// swapReader is an archive that, halfway, puts a link to victim in place of
+// the temporary file in dir, like a hostile owner of dir.
+type swapReader struct {
+	t       *testing.T
+	r       io.Reader
+	dir     string
+	victim  string
+	swapped bool
+}
+
+func (s *swapReader) Read(p []byte) (int, error) {
+	if !s.swapped {
+		s.swapped = true
+		matches, _ := filepath.Glob(filepath.Join(s.dir, ".fly-update-*"))
+		for _, m := range matches {
+			if err := os.Rename(m, m+".moved"); err != nil {
+				s.t.Fatal(err)
+			}
+			if err := os.Symlink(s.victim, m); err != nil {
+				s.t.Fatal(err)
+			}
+		}
+	}
+	return s.r.Read(p)
+}
+
+func TestReplaceBinaryDoesNotFollowALinkToAnOtherFile(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("the attack needs root to write the binary")
+	}
+
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "fly")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(exe, 1000, 1000); err != nil {
+		t.Fatal(err)
+	}
+	// A root file, for example /etc/shadow.
+	victim := filepath.Join(t.TempDir(), "shadow")
+	if err := os.WriteFile(victim, []byte("secret"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	gz := &bytes.Buffer{}
+	tw := tar.NewWriter(gz)
+	_ = tw.WriteHeader(&tar.Header{Name: "fly-linux-amd64", Mode: 0o755, Size: 3, Typeflag: tar.TypeReg})
+	_, _ = tw.Write([]byte("new"))
+	_ = tw.Close()
+	var zipped bytes.Buffer
+	zw := gzip.NewWriter(&zipped)
+	_, _ = zw.Write(gz.Bytes())
+	_ = zw.Close()
+
+	tr := tar.NewReader(func() io.Reader { r, _ := gzip.NewReader(&zipped); return r }())
+	if _, err := tr.Next(); err != nil {
+		t.Fatal(err)
+	}
+	_ = writeBinary(exe, &swapReader{t: t, r: tr, dir: dir, victim: victim})
+
+	info, err := os.Stat(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := info.Sys().(*syscall.Stat_t)
+	if info.Mode().Perm() != 0o640 || st.Uid != 0 {
+		t.Errorf("victim = %v owned by %d, want 0640 owned by root: root followed the link", info.Mode().Perm(), st.Uid)
 	}
 }

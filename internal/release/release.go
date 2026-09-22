@@ -227,6 +227,10 @@ func writeBinary(exe string, r io.Reader) (err error) {
 		_ = tmp.Close()
 		return fmt.Errorf("making binary executable: %w", err)
 	}
+	if err = keepOwner(tmp, exe); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("keeping the owner of the binary: %w", err)
+	}
 	// Put the binary on the disk before the rename: after a power loss, a
 	// renamed but empty binary would not start.
 	if err = tmp.Sync(); err != nil {
@@ -235,9 +239,6 @@ func writeBinary(exe string, r io.Reader) (err error) {
 	}
 	if err = tmp.Close(); err != nil {
 		return fmt.Errorf("writing new binary: %w", err)
-	}
-	if err = keepOwner(tmp.Name(), exe); err != nil {
-		return fmt.Errorf("keeping the owner of the binary: %w", err)
 	}
 	if err = os.Rename(tmp.Name(), exe); err != nil {
 		return fmt.Errorf("replacing binary: %w", err)
@@ -252,10 +253,12 @@ func writeBinary(exe string, r io.Reader) (err error) {
 	return nil
 }
 
-// keepOwner gives path the owner of exe. "sudo fly update" then keeps the
-// binary of the agent with the server user, not with root. Only root can give
-// a file to a different user; for other users the owner is already correct.
-func keepOwner(path, exe string) error {
+// keepOwner gives the open file f the owner of exe. "sudo fly update" then
+// keeps the binary of the agent with the server user, not with root. Only
+// root can give a file to a different user; for other users the owner is
+// already correct. It changes the open file, not a path: a path in a
+// directory of an other user can be replaced by a link to a root file.
+func keepOwner(f *os.File, exe string) error {
 	info, err := os.Stat(exe)
 	if err != nil {
 		return nil
@@ -265,5 +268,5 @@ func keepOwner(path, exe string) error {
 		return nil
 	}
 
-	return os.Chown(path, int(st.Uid), int(st.Gid))
+	return f.Chown(int(st.Uid), int(st.Gid))
 }

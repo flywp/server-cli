@@ -100,6 +100,19 @@ func TestStale(t *testing.T) {
 	}
 }
 
+func TestStaleWhenTheProcessJustEnded(t *testing.T) {
+	fakeSystemctl(t, "4242", 0)
+	// No /proc/4242: the process ended after systemctl showed it.
+	old := procRoot
+	procRoot = t.TempDir()
+	t.Cleanup(func() { procRoot = old })
+
+	stale, err := Stale(context.Background())
+	if err != nil || stale {
+		t.Errorf("Stale() = %v, %v; want false without an error", stale, err)
+	}
+}
+
 func TestStaleErrors(t *testing.T) {
 	fakeSystemctl(t, "not-a-number", 0)
 	if _, err := Stale(context.Background()); err == nil {
@@ -117,8 +130,8 @@ func TestRestart(t *testing.T) {
 	if err := Restart(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if c := calls(t, log); c != "restart fly-agent" {
-		t.Errorf("systemctl calls = %q, want restart fly-agent", c)
+	if c := calls(t, log); c != "try-restart fly-agent" {
+		t.Errorf("systemctl calls = %q, want try-restart fly-agent: a stopped agent stays stopped", c)
 	}
 
 	fakeSystemctl(t, "0", 1)

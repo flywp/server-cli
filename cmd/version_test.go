@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -30,6 +31,12 @@ func TestConfirmNeedsATerminal(t *testing.T) {
 // fakeAgentService makes the agent unit exist and puts a fake systemctl in
 // PATH. It returns the log of the systemctl calls.
 func fakeAgentService(t *testing.T, installed bool) string {
+	return fakeAgentServiceExit(t, installed, 0)
+}
+
+// fakeAgentServiceExit is fakeAgentService with a systemctl that exits with
+// exit.
+func fakeAgentServiceExit(t *testing.T, installed bool, exit int) string {
 	t.Helper()
 
 	unit := filepath.Join(t.TempDir(), "fly-agent.service")
@@ -44,7 +51,7 @@ func fakeAgentService(t *testing.T, installed bool) string {
 
 	dir := t.TempDir()
 	log := filepath.Join(t.TempDir(), "calls")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n[ \"$1\" = show ] && echo 0\nexit 0\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + log + "\n[ \"$1\" = show ] && echo 0\n[ " + strconv.Itoa(exit) + " -ne 0 ] && echo 'Failed to connect to bus' >&2\nexit " + strconv.Itoa(exit) + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +74,8 @@ func TestRestartAgentAfterAnUpdate(t *testing.T) {
 	if err := restartAgent(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := systemctlCalls(t, log); got != "restart fly-agent" {
-		t.Errorf("systemctl calls = %q, want restart fly-agent", got)
+	if got := systemctlCalls(t, log); got != "try-restart fly-agent" {
+		t.Errorf("systemctl calls = %q, want try-restart fly-agent", got)
 	}
 }
 
@@ -85,13 +92,26 @@ func TestNoRestartWithoutTheAgent(t *testing.T) {
 	}
 }
 
-func TestNoRestartWhenTheAgentIsCurrent(t *testing.T) {
-	// The fake systemctl shows MainPID 0: the agent does not run an old binary.
+func TestNoRestartWhenTheAgentDoesNotRun(t *testing.T) {
+	// The fake systemctl shows MainPID 0: the agent does not run, so systemd
+	// starts the binary on the disk.
 	log := fakeAgentService(t, true)
 	if err := restartStaleAgent(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := systemctlCalls(t, log); got != "show --property=MainPID --value fly-agent" {
 		t.Errorf("systemctl calls = %q, want only the check", got)
+	}
+}
+
+func TestASystemctlFailureShowsItsMessage(t *testing.T) {
+	fakeAgentServiceExit(t, true, 1)
+
+	for name, f := range map[string]func(context.Context) error{"restartAgent": restartAgent, "restartStaleAgent": restartStaleAgent} {
+		var stderr strings.Builder
+		code := exitCode(f(context.Background()), &stderr)
+		if code != 1 || !strings.Contains(stderr.String(), "Failed to connect to bus") {
+			t.Errorf("%s: exit %d, stderr %q; want exit 1 and the systemctl message", name, code, stderr.String())
+		}
 	}
 }
