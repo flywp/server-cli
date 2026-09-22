@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -125,6 +126,51 @@ func TestUpdateToTheRunningVersionDoesNotDownload(t *testing.T) {
 		got := cp.results("01JBX0000000000000000000A1")
 		if len(got) != 1 || got[0].Name != wire.EventCommandCompleted || got[0].Data.Version != "v0.3.0" {
 			t.Errorf("results = %+v, want command.completed with v0.3.0", got)
+		}
+	})
+}
+
+func TestUpdateToAnOlderReleaseIsARollback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		setVersion(t, "v0.3.0")
+		calls := fakeUpdate(t, nil)
+		cp := &fakeCP{commands: []wire.Command{updateCommand(t, "01JBX0000000000000000000K1", "v0.2.0")}}
+
+		if !start(t, time.Minute, t.TempDir(), cp) {
+			t.Fatal("the agent did not install the older release")
+		}
+		if len(*calls) != 1 || (*calls)[0].Version != "v0.2.0" {
+			t.Errorf("updates = %+v, want one to v0.2.0: the control plane decides the version", *calls)
+		}
+	})
+}
+
+func TestRestartIsNotRunWhenItsRecordCannotBeSaved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write to a read-only directory")
+	}
+
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		cp := &fakeCP{commands: []wire.Command{{ID: "01JBX0000000000000000000S1", Verb: wire.VerbRestart, Args: json.RawMessage(`{}`)}}, keepOpen: true}
+
+		done := make(chan bool)
+		go func() { done <- start(t, 3*time.Minute, dir, cp) }()
+		synctest.Wait()
+
+		// The state directory becomes read-only after the start: the list of
+		// the commands that ran cannot be saved.
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.Chmod(dir, 0o700) }()
+
+		if <-done {
+			t.Fatal("the agent exited for agent.restart without a saved record: the next process would restart again")
+		}
+		got := cp.results("01JBX0000000000000000000S1")
+		if len(got) == 0 || got[0].Name != wire.EventCommandFailed {
+			t.Errorf("results = %v, want command.failed", eventNames(got))
 		}
 	})
 }
