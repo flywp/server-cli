@@ -210,6 +210,89 @@ func TestDomainFlag(t *testing.T) {
 	}
 }
 
+func TestFlagsPassThrough(t *testing.T) {
+	tests := []struct {
+		name     string
+		services []string
+		outside  bool // run outside the site directory
+		args     []string
+		want     string // docker arguments after "compose -f <file>"
+	}{
+		{
+			name: "wp-cli flags",
+			args: []string{"wp", "plugin", "list", "--format=json"},
+			want: "exec -T php wp plugin list --format=json",
+		},
+		{
+			name:    "domain before the wp-cli command",
+			outside: true,
+			args:    []string{"--domain", "example.com", "wp", "plugin", "list", "--format=json"},
+			want:    "exec -T php wp plugin list --format=json",
+		},
+		{
+			name: "exec flags",
+			args: []string{"exec", "php", "ls", "-la"},
+			want: "exec -T php ls -la",
+		},
+		{
+			name: "exec in the default service",
+			args: []string{"exec", "ls", "-la"},
+			want: "exec -T php ls -la",
+		},
+		{
+			name:     "exec on an OpenLiteSpeed site",
+			services: []string{"openlitespeed"},
+			args:     []string{"exec", "ls"},
+			want:     "exec -T openlitespeed ls",
+		},
+		{
+			name:     "wp on an OpenLiteSpeed site",
+			services: []string{"openlitespeed"},
+			args:     []string{"wp", "plugin", "list"},
+			want:     "exec -T --user www-data openlitespeed wp plugin list",
+		},
+		{
+			name: "follow logs of one service",
+			args: []string{"logs", "-f", "php"},
+			want: "logs --follow php",
+		},
+		{
+			name: "tail logs",
+			args: []string{"logs", "--tail", "50"},
+			want: "logs --tail 50",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t, tt.services...)
+			dir := e.site
+			if tt.outside {
+				dir = testutil.TempDir(t)
+			}
+
+			res := e.run(t, dir, tt.args...)
+			if res.code != 0 {
+				t.Fatalf("exit code = %d, want 0 (stderr %q)", res.code, res.stderr)
+			}
+
+			want := "compose -f " + filepath.Join(e.site, "docker-compose.yml") + " " + tt.want
+			if calls := e.docker.Calls(t); len(calls) != 1 || calls[0] != want {
+				t.Errorf("docker calls = %q, want [%q]", calls, want)
+			}
+		})
+	}
+}
+
+func TestExecNeedsACommand(t *testing.T) {
+	e := newEnv(t)
+
+	res := e.run(t, e.site, "exec", "php")
+	if res.code != 1 || !strings.Contains(res.stderr, "no command given") {
+		t.Errorf("exit %d, stderr %q, want exit 1 and a missing-command error", res.code, res.stderr)
+	}
+}
+
 func TestUsageErrors(t *testing.T) {
 	tests := []struct {
 		args []string

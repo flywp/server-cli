@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/flywp/server-cli/internal/docker"
 	"github.com/flywp/server-cli/internal/utils"
@@ -34,8 +35,18 @@ func siteComposePath() (string, error) {
 }
 
 var wpCmd = &cobra.Command{
-	Use:   "wp",
+	Use:   "wp [wp-cli command] [args...]",
 	Short: "Run wp-cli commands",
+	Long: `Run wp-cli commands in the site's PHP container.
+
+All arguments after the first wp-cli word go to wp-cli unchanged, flags included.
+Put --domain before the wp-cli command:
+
+  fly --domain example.com wp plugin list --format=json
+
+To pass a flag as the first argument, put -- before it:
+
+  fly wp -- --info`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		composePath, err := siteComposePath()
 		if err != nil {
@@ -98,50 +109,89 @@ var restartCmd = &cobra.Command{
 	},
 }
 
+// execServices are the services that fly exec accepts as its first argument.
+var execServices = []string{"php", "nginx", "openlitespeed"}
+
+// splitService splits the arguments of fly exec into a service name and a
+// command. The service is empty when the first argument is not a service.
+func splitService(args []string) (service string, command []string) {
+	if len(args) > 0 && slices.Contains(execServices, args[0]) {
+		return args[0], args[1:]
+	}
+
+	return "", args
+}
+
 var execCmd = &cobra.Command{
 	Use:   "exec [service] command [args...]",
 	Short: "Execute a command in the Docker container",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Execute a command in a Docker container of the site.
+
+If the first argument is php, nginx or openlitespeed, the command runs in that
+service. Otherwise it runs in the site's PHP service (php or openlitespeed).
+All arguments after the first one go to the command unchanged, flags included.
+Put --domain before the command:
+
+  fly --domain example.com exec php ls -la`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		composePath, err := siteComposePath()
 		if err != nil {
 			return err
 		}
 
-		// if the next argument is "php", "nginx" or "openlitespeed", use it as the service name
-		// otherwise, use "php" as the default service name
-		composeArgs := []string{"exec"}
-		if args[0] == "php" || args[0] == "nginx" || args[0] == "openlitespeed" {
-			composeArgs = append(composeArgs, args[0])
-			args = args[1:]
-		} else {
-			composeArgs = append(composeArgs, "php")
+		service, command := splitService(args)
+		if service == "" {
+			if service, err = docker.DefaultService(composePath); err != nil {
+				return err
+			}
 		}
 
-		composeArgs = append(composeArgs, args...)
+		if len(command) == 0 {
+			return fmt.Errorf("no command given for service %q", service)
+		}
 
-		return docker.RunCompose(composePath, composeArgs...)
+		return docker.RunCompose(composePath, append([]string{"exec", service}, command...)...)
 	},
 }
 
+var (
+	logsFollow bool
+	logsTail   string
+)
+
 var logsCmd = &cobra.Command{
-	Use:   "logs",
+	Use:   "logs [service...]",
 	Short: "Show logs of the Docker container",
 	Long:  `Show logs of Docker container(s). If no container is specified, it shows logs for all containers.`,
-	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		composePath, err := siteComposePath()
 		if err != nil {
 			return err
 		}
 
-		return docker.RunCompose(composePath, append([]string{"logs"}, args...)...)
+		composeArgs := []string{"logs"}
+		if logsFollow {
+			composeArgs = append(composeArgs, "--follow")
+		}
+		if logsTail != "" {
+			composeArgs = append(composeArgs, "--tail", logsTail)
+		}
+
+		return docker.RunCompose(composePath, append(composeArgs, args...)...)
 	},
 }
 
 func init() {
 	// Add domain flag to rootCmd
 	rootCmd.PersistentFlags().StringVar(&domain, "domain", "", "Specify domain for executing commands in a specific site")
+
+	// Flags after the first argument belong to wp-cli or to the command.
+	wpCmd.Flags().SetInterspersed(false)
+	execCmd.Flags().SetInterspersed(false)
+
+	logsCmd.Flags().BoolVarP(&logsFollow, "follow", "f", false, "Follow log output")
+	logsCmd.Flags().StringVar(&logsTail, "tail", "", "Number of lines to show from the end of the logs")
 
 	rootCmd.AddCommand(wpCmd)
 	rootCmd.AddCommand(startCmd)

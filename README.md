@@ -70,10 +70,10 @@ You can run the following commands from anywhere inside a site folder or by spec
 fly start --domain example.com       # starts the website
 fly stop --domain example.com        # stops the website
 fly restart --domain example.com     # restarts the website
-fly wp --domain example.com          # execute WP-CLI commands
+fly --domain example.com wp <command>          # execute WP-CLI commands
 fly logs --domain example.com        # view logs from all containers or a single one
 fly restart <container> --domain example.com  # restart a container
-fly exec <container> --domain example.com     # execute commands inside a container. Default: "php"
+fly --domain example.com exec [container] <command>  # execute commands inside a container. Default: the PHP container
 ```
 
 Or run the commands from within the site directory without specifying the domain:
@@ -82,10 +82,11 @@ Or run the commands from within the site directory without specifying the domain
 fly start                   # starts the website
 fly stop                    # stops the website
 fly restart                 # restarts the website
-fly wp                      # execute WP-CLI commands
-fly logs <container>        # view logs from all containers or a single one
+fly wp <command>            # execute WP-CLI commands
+fly logs [container]        # view logs from all containers or a single one
+fly logs -f [container]     # follow the logs (--tail N shows the last N lines)
 fly restart <container>     # restart a container
-fly exec <container>        # execute commands inside a container. Default: "php"
+fly exec [container] <command>  # execute commands inside a container. Default: the PHP container
 ```
 
 ### WP-CLI
@@ -93,8 +94,10 @@ fly exec <container>        # execute commands inside a container. Default: "php
 **wp-cli**: To access `wp-cli`, use the following command from anywhere in the website folder or specify the domain name. The CLI will find the appropriate WordPress folder to execute the `wp` command.
 
 ```bash
-fly wp --domain example.com
+fly --domain example.com wp plugin list --format=json
 ```
+
+All arguments after the WP-CLI command (or after the command for `fly exec`) go to that command unchanged, flags included. Put `--domain` before the command. To pass a flag as the first argument, put `--` before it, for example `fly wp -- --info`.
 
 ### Global Commands
 
