@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -130,19 +131,60 @@ func TestUpdateToTheRunningVersionDoesNotDownload(t *testing.T) {
 	})
 }
 
-func TestUpdateToAnOlderReleaseIsARollback(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		setVersion(t, "v0.3.0")
-		calls := fakeUpdate(t, nil)
-		cp := &fakeCP{commands: []wire.Command{updateCommand(t, "01JBX0000000000000000000K1", "v0.2.0")}}
+func TestNoDowngrade(t *testing.T) {
+	tests := []struct {
+		name, running, target string
+	}{
+		{"older release", "v0.3.0", "v0.2.0"},
+		{"release over its dev tag", "v0.3.0", "v0.3.0-dev.1a2b3c4"},
+		{"newer dev tag over an older release", "v0.3.0-dev.1a2b3c4", "v0.2.1"},
+	}
 
-		if !start(t, time.Minute, t.TempDir(), cp) {
-			t.Fatal("the agent did not install the older release")
-		}
-		if len(*calls) != 1 || (*calls)[0].Version != "v0.2.0" {
-			t.Errorf("updates = %+v, want one to v0.2.0: the control plane decides the version", *calls)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				setVersion(t, tt.running)
+				calls := fakeUpdate(t, nil)
+				cp := &fakeCP{commands: []wire.Command{updateCommand(t, "01JBX0000000000000000000K1", tt.target)}}
+
+				if start(t, time.Minute, t.TempDir(), cp) {
+					t.Fatal("the agent exited: it must not downgrade")
+				}
+				if len(*calls) != 0 {
+					t.Errorf("updates = %+v, want none", *calls)
+				}
+				got := cp.results("01JBX0000000000000000000K1")
+				if len(got) != 1 || got[0].Name != wire.EventCommandFailed || !strings.Contains(got[0].Data.Error, "it does not downgrade") {
+					t.Errorf("results = %+v, want one command.failed that says why", got)
+				}
+			})
+		})
+	}
+}
+
+func TestUpdateFromAnOlderOrUnorderedVersion(t *testing.T) {
+	tests := []struct {
+		name, running, target string
+	}{
+		{"older release", "v0.2.0", "v0.3.0"},
+		{"dev tag to its release", "v0.3.0-dev.1a2b3c4", "v0.3.0"},
+		{"two dev tags of one release", "v0.3.0-dev.9f8e7d6", "v0.3.0-dev.1a2b3c4"},
+		{"a build without a release tag", "dev", "v0.3.0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				setVersion(t, tt.running)
+				calls := fakeUpdate(t, nil)
+				cp := &fakeCP{commands: []wire.Command{updateCommand(t, "01JBX0000000000000000000K2", tt.target)}}
+
+				if !start(t, time.Minute, t.TempDir(), cp) || len(*calls) != 1 {
+					t.Errorf("updates = %+v, want one update to %s", *calls, tt.target)
+				}
+			})
+		})
+	}
 }
 
 func TestRestartIsNotRunWhenItsRecordCannotBeSaved(t *testing.T) {
@@ -286,28 +328,28 @@ func TestNoPollWhileTheControlPlaneIsDown(t *testing.T) {
 	})
 }
 
-func TestVersionMatches(t *testing.T) {
+func TestCompareVersions(t *testing.T) {
 	tests := []struct {
-		target, running string
-		want            bool
+		a, b string
+		cmp  int
+		ok   bool
 	}{
-		{"v0.3.0", "v0.3.0", true},
-		{"v0.3.0", "v0.3.1", true},
-		{"v0.3.0", "v1.0.0", true},
-		{"v0.3.0", "v0.2.9", false},
-		{"v0.3.0", "0.3.0", false},
-		// Dev tags have no order: only the same tag matches.
-		{"v0.2.0-dev.1a2b3c4", "v0.2.0-dev.1a2b3c4", true},
-		{"v0.2.0-dev.1a2b3c4", "v0.2.0-dev.9f8e7d6", false},
-		{"v0.2.0-dev.9f8e7d6", "v0.2.0-dev.1a2b3c4", false},
-		{"v0.2.0-dev.1a2b3c4", "v0.2.0", false},
-		{"v0.2.0", "v0.2.0-dev.1a2b3c4", false},
-		{"v0.2.0", "dev", false},
+		{"v0.3.0", "v0.3.0", 0, true},
+		{"v0.3.1", "v0.3.0", 1, true},
+		{"v0.2.9", "v0.3.0", -1, true},
+		{"v1.0.0", "v0.10.0", 1, true},
+		{"v0.2.0-dev.1a2b3c4", "v0.2.0", -1, true},
+		{"v0.3.0-dev.1a2b3c4", "v0.2.1", 1, true},
+		{"v0.2.0-dev.1a2b3c4", "v0.2.0-dev.1a2b3c4", 0, true},
+		// Dev tags of one release have no order.
+		{"v0.2.0-dev.9f8e7d6", "v0.2.0-dev.1a2b3c4", 0, false},
+		{"dev", "v0.2.0", 0, false},
+		{"v0.2.0", "0.2.0", 0, false},
 	}
 
 	for _, tt := range tests {
-		if got := versionMatches(tt.target, tt.running); got != tt.want {
-			t.Errorf("versionMatches(%q, %q) = %v, want %v", tt.target, tt.running, got, tt.want)
+		if cmp, ok := compareVersions(tt.a, tt.b); cmp != tt.cmp || ok != tt.ok {
+			t.Errorf("compareVersions(%q, %q) = %d, %v; want %d, %v", tt.a, tt.b, cmp, ok, tt.cmp, tt.ok)
 		}
 	}
 }
