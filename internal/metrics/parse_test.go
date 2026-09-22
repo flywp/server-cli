@@ -63,9 +63,18 @@ func TestParseNetDev(t *testing.T) {
 }
 
 func TestParseDefaultRoute(t *testing.T) {
-	data := "Iface\tDestination\tGateway\neth1\t0A000000\t00000000\neth0\t00000000\t01C0A8C0\n"
+	const header = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+	data := header +
+		"eth1\t0A000000\t00000000\t0001\t0\t0\t0\t000000FF\t0\t0\t0\n" +
+		"eth0\t00000000\t01C0A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
 	if got := parseDefaultRoute([]byte(data)); got != "eth0" {
 		t.Errorf("parseDefaultRoute() = %q, want eth0", got)
+	}
+
+	// OpenVPN def1: 0.0.0.0/1 on tun0 is not the default route.
+	vpn := header + "tun0\t00000000\t0100080A\t0003\t0\t0\t0\t00000080\t0\t0\t0\n"
+	if got := parseDefaultRoute([]byte(vpn)); got != "" {
+		t.Errorf("parseDefaultRoute() = %q, want no default route for 0.0.0.0/1", got)
 	}
 	if got := parseDefaultRoute([]byte("Iface\tDestination\n")); got != "" {
 		t.Errorf("parseDefaultRoute() = %q, want no interface", got)
@@ -96,8 +105,10 @@ func TestParseUptime(t *testing.T) {
 }
 
 func TestParseAptCheck(t *testing.T) {
-	if total, security, err := parseAptCheck([]byte("33;6")); err != nil || total != 33 || security != 6 {
-		t.Errorf("parseAptCheck(33;6) = %d, %d, %v", total, security, err)
+	for _, out := range []string{"33;6", "33;6\n", "Warning: W:something; else\n33;6"} {
+		if total, security, err := parseAptCheck([]byte(out)); err != nil || total != 33 || security != 6 {
+			t.Errorf("parseAptCheck(%q) = %d, %d, %v; want 33, 6", out, total, security, err)
+		}
 	}
 	for _, bad := range []string{"", "33", "a;b", "1;x"} {
 		if _, _, err := parseAptCheck([]byte(bad)); err == nil {

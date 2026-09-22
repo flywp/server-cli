@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,9 @@ func newServer(t *testing.T) *server {
 	s.write("proc/meminfo", "MemTotal:        8000000 kB\nMemFree:          500000 kB\nMemAvailable:    6000000 kB\nSwapTotal:       2000000 kB\nSwapFree:        1500000 kB\n")
 	s.write("proc/uptime", "1892344.51 3700000.00\n")
 	s.write("proc/sys/kernel/random/boot_id", "boot-1\n")
-	s.write("proc/net/route", "Iface\tDestination\tGateway\nens3\t00000000\t0101A8C0\nens3\t0001A8C0\t00000000\n")
+	s.write("proc/net/route", "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"+
+		"ens3\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"+
+		"ens3\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n")
 	s.write("etc/os-release", "NAME=\"Ubuntu\"\nPRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\nID=ubuntu\n")
 	s.device("eth0")
 	s.device("eth1")
@@ -268,6 +271,10 @@ func TestStatus(t *testing.T) {
 		return []byte("33;6"), nil
 	}
 
+	// The count runs with the first sample, before the sends of a report.
+	if _, err := c.Sample(time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	s := c.Status(context.Background())
 	if !s.RebootRequired || s.UpdatesTotal != 33 || s.UpdatesSecurity != 6 {
 		t.Errorf("status = %+v, want a restart and 33 updates with 6 security updates", s)
@@ -278,12 +285,17 @@ func TestStatus(t *testing.T) {
 
 	// The counts stay for one hour: apt-check takes some seconds.
 	c.Status(context.Background())
+	if _, err := c.Sample(time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if calls != 1 {
 		t.Errorf("apt-check ran %d times, want 1 in one hour", calls)
 	}
 
 	c.updatesAt = time.Now().Add(-2 * time.Hour)
-	c.Status(context.Background())
+	if _, err := c.Sample(time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if calls != 2 {
 		t.Errorf("apt-check ran %d times, want again after one hour", calls)
 	}
@@ -294,11 +306,108 @@ func TestStatusWithoutAptCheck(t *testing.T) {
 	c := srv.collector(t.TempDir())
 	c.aptCheck = func(context.Context) ([]byte, error) { return nil, os.ErrNotExist }
 
+	if _, err := c.Sample(time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	s := c.Status(context.Background())
 	if s.UpdatesTotal != 0 || s.UpdatesSecurity != 0 || s.RebootRequired {
 		t.Errorf("status = %+v, want 0 updates and no restart", s)
 	}
 	if s.OS == "" {
 		t.Error("status has no OS: one missing value must not clear the others")
+	}
+}
+
+func TestAptCheckWithWarningsBeforeTheResult(t *testing.T) {
+	srv := newServer(t)
+	c := srv.collector(t.TempDir())
+	// apt-check on Ubuntu 24.04 with a source that is configured two times.
+	c.aptCheck = func(context.Context) ([]byte, error) {
+		return []byte("/usr/lib/update-notifier/apt-check:351: Warning: W:Target Packages (main/binary-amd64/Packages) is configured multiple times in /etc/apt/sources.list:1 and /etc/apt/sources.list.d/ubuntu.sources:1\n" +
+			"  apt_pkg.init()\n29;26"), nil
+	}
+
+	if _, err := c.Sample(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if s := c.Status(context.Background()); s.UpdatesTotal != 29 || s.UpdatesSecurity != 26 {
+		t.Errorf("updates = %d;%d, want 29;26 from the last line", s.UpdatesTotal, s.UpdatesSecurity)
+	}
+}
+
+func TestAFailedCountKeepsTheLastCounts(t *testing.T) {
+	srv := newServer(t)
+	c := srv.collector(t.TempDir())
+	if _, err := c.Sample(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	// One hour later apt-check fails, for example with a timeout.
+	c.aptCheck = func(context.Context) ([]byte, error) { return nil, context.DeadlineExceeded }
+	c.updatesAt = time.Now().Add(-2 * time.Hour)
+	if _, err := c.Sample(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if s := c.Status(context.Background()); s.UpdatesTotal != 33 || s.UpdatesSecurity != 6 {
+		t.Errorf("updates = %d;%d, want the last counts 33;6", s.UpdatesTotal, s.UpdatesSecurity)
+	}
+}
+
+func TestNoCountedInterfaceIsNotZeroTraffic(t *testing.T) {
+	srv := newServer(t)
+	if err := os.RemoveAll(filepath.Join(srv.root, "sys")); err != nil {
+		t.Fatal(err)
+	}
+	// An IPv6-only host: no IPv4 default route.
+	srv.write("proc/net/route", "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n")
+	now := time.Now()
+	c := srv.collector(t.TempDir())
+	if _, err := c.Sample(now); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := c.Sample(now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.NetCountersReset {
+		t.Error("net_counters_reset = false, want true: the traffic is not known")
+	}
+}
+
+func TestPortsOfAnOtherInterfaceAreNotCounted(t *testing.T) {
+	srv := newServer(t)
+	// Azure accelerated networking: the VF has a device, but its traffic is
+	// also in eth0, its master. A bond port is the same.
+	srv.device("enP1s1")
+	if err := os.Symlink("../eth0", filepath.Join(srv.root, "sys/class/net/enP1s1/master")); err != nil {
+		t.Fatal(err)
+	}
+	srv.net(map[string][2]uint64{"eth0": {1000, 500}, "eth1": {100, 50}, "enP1s1": {900, 400}})
+
+	all, err := parseFile(srv.collector(t.TempDir()), "proc/net/dev", parseNetDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := srv.collector(t.TempDir()).interfaces(all)
+	sort.Strings(got)
+	if fmt.Sprint(got) != "[eth0 eth1]" {
+		t.Errorf("interfaces() = %v, want [eth0 eth1] without the port enP1s1", got)
+	}
+}
+
+func TestNewWithCountersThatCannotBeRead(t *testing.T) {
+	srv := newServer(t)
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "counters.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := srv.collector(state).Sample(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.NetCountersReset {
+		t.Error("net_counters_reset = false, want true after counters that cannot be read")
 	}
 }
