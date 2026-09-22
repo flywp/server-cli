@@ -7,6 +7,7 @@ toolchain go1.27.1
 require (
 	github.com/fatih/color v1.19.0
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/mod v0.41.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 

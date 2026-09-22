@@ -1,19 +1,33 @@
 package utils
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"time"
 
 	"github.com/flywp/server-cli/internal/version"
+	"golang.org/x/mod/semver"
 )
 
-const GithubAPI = "https://api.github.com/repos/flywp/server-cli/releases/latest"
+// GithubAPI is the GitHub API URL of the latest release.
+var GithubAPI = "https://api.github.com/repos/flywp/server-cli/releases/latest"
+
+// httpClient limits each request, including the download of the binary.
+var httpClient = &http.Client{Timeout: 60 * time.Second}
+
+// maxBinarySize limits the size of the binary in a release archive.
+const maxBinarySize = 200 << 20
 
 type GithubRelease struct {
 	TagName string `json:"tag_name"`
@@ -23,131 +37,129 @@ type GithubRelease struct {
 	} `json:"assets"`
 }
 
-func CheckForUpdates() (string, bool, error) {
-	resp, err := http.Get(GithubAPI)
-	if err != nil {
-		return "", false, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", false, err
-	}
-
-	var release GithubRelease
-	if err := json.Unmarshal(body, &release); err != nil {
-		return "", false, err
-	}
-
-	return release.TagName, release.TagName > version.Version, nil
+// Update compares the latest release with the running version.
+type Update struct {
+	Release *GithubRelease
+	// Available is true when the release is newer than the running version.
+	Available bool
+	// Comparable is false when the running version is not built from a
+	// release tag, for example "dev".
+	Comparable bool
 }
 
-func SelfUpdate() error {
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("the update command must be run as root")
-	}
-
-	release, err := getLatestRelease()
+// CheckForUpdates gets the latest release from GitHub and compares it with
+// the running version.
+func CheckForUpdates(ctx context.Context) (*Update, error) {
+	release, err := LatestRelease(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get latest release: %w", err)
+		return nil, err
 	}
 
-	assetURL := getAssetURL(release)
-	if assetURL == "" {
-		return fmt.Errorf("no suitable binary found for this system (OS: %s, ARCH: %s)", runtime.GOOS, runtime.GOARCH)
-	}
-
-	// Create a temporary directory
-	tmpDir, err := os.MkdirTemp("", "fly-cli-update")
-	if err != nil {
-		return fmt.Errorf("failed to create temp directory: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Download the archive
-	resp, err := http.Get(assetURL)
-	if err != nil {
-		return fmt.Errorf("failed to download update: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to download update: HTTP %d", resp.StatusCode)
-	}
-
-	// Create the archive file
-	archivePath := filepath.Join(tmpDir, "update.tar.gz")
-	out, err := os.Create(archivePath)
-	if err != nil {
-		return fmt.Errorf("failed to create archive file: %w", err)
-	}
-
-	// Write the body to file
-	_, err = io.Copy(out, resp.Body)
-	out.Close()
-	if err != nil {
-		return fmt.Errorf("failed to write archive file: %w", err)
-	}
-
-	// Extract the archive
-	binaryName := fmt.Sprintf("fly-%s-%s", runtime.GOOS, runtime.GOARCH)
-	cmd := exec.Command("tar", "-xzf", archivePath, "-C", tmpDir)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to extract archive: %w", err)
-	}
-
-	// Get the current executable path
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get current executable path: %w", err)
-	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return fmt.Errorf("failed to resolve symlinks: %w", err)
-	}
-
-	// Make the new binary executable
-	extractedBinary := filepath.Join(tmpDir, binaryName)
-	if err := os.Chmod(extractedBinary, 0755); err != nil {
-		return fmt.Errorf("failed to make binary executable: %w", err)
-	}
-
-	// Rename the temporary file to the executable name
-	if err := os.Rename(extractedBinary, exe); err != nil {
-		return fmt.Errorf("failed to replace old binary: %w", err)
-	}
-
-	return nil
+	available, comparable := isNewer(release.TagName, version.Version)
+	return &Update{Release: release, Available: available, Comparable: comparable}, nil
 }
 
-func getLatestRelease() (*GithubRelease, error) {
-	resp, err := http.Get(GithubAPI)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+// describeSuffix matches what git describe adds after a tag: the number of
+// commits since the tag, the commit hash and "-dirty" for local changes.
+var describeSuffix = regexp.MustCompile(`(-\d+-g[0-9a-f]+)?(-dirty)?$`)
 
-	body, err := io.ReadAll(resp.Body)
+// isNewer reports whether the release version latest is newer than current.
+// comparable is false when current is not built from a release tag.
+func isNewer(latest, current string) (newer, comparable bool) {
+	base := describeSuffix.ReplaceAllString(current, "")
+	if !semver.IsValid(base) {
+		return false, false
+	}
+
+	return semver.Compare(latest, base) > 0, true
+}
+
+// LatestRelease returns the latest release from GitHub.
+func LatestRelease(ctx context.Context) (*GithubRelease, error) {
+	resp, err := get(ctx, GithubAPI)
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = resp.Body.Close() }()
 
 	var release GithubRelease
-	if err := json.Unmarshal(body, &release); err != nil {
-		return nil, err
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, fmt.Errorf("reading release information: %w", err)
+	}
+
+	if !semver.IsValid(release.TagName) {
+		return nil, fmt.Errorf("latest release has an invalid version %q", release.TagName)
 	}
 
 	return &release, nil
 }
 
-func getAssetURL(release *GithubRelease) string {
-	arch := runtime.GOARCH
-	if runtime.GOOS != "linux" {
+// get sends a GET request and returns the response if its status is 200 OK.
+func get(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "fly-cli/"+version.Version)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+
+		limited := resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests
+		if limited && resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			return nil, errors.New("the GitHub API rate limit is exceeded, try again later")
+		}
+		return nil, fmt.Errorf("unexpected response from %s: %s", url, resp.Status)
+	}
+
+	return resp, nil
+}
+
+// SelfUpdate replaces the running binary with the binary from release.
+func SelfUpdate(ctx context.Context, release *GithubRelease) error {
+	assetURL := assetURL(release, runtime.GOOS, runtime.GOARCH)
+	if assetURL == "" {
+		return fmt.Errorf("no suitable binary found for this system (OS: %s, ARCH: %s)", runtime.GOOS, runtime.GOARCH)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("finding the current executable: %w", err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return fmt.Errorf("resolving symlinks: %w", err)
+	}
+
+	resp, err := get(ctx, assetURL)
+	if err != nil {
+		return fmt.Errorf("downloading update: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return replaceBinary(exe, resp.Body, binaryName(runtime.GOOS, runtime.GOARCH))
+}
+
+// binaryName is the name of the binary in a release archive. Releases must
+// keep this name: installed versions of fly look for it.
+func binaryName(goos, goarch string) string {
+	return fmt.Sprintf("fly-%s-%s", goos, goarch)
+}
+
+// assetURL returns the download URL of the release archive for goos and
+// goarch, or "" if the release has none.
+func assetURL(release *GithubRelease, goos, goarch string) string {
+	if goos != "linux" {
 		return ""
 	}
 
-	expectedName := fmt.Sprintf("fly-linux-%s.tar.gz", arch)
+	expectedName := binaryName(goos, goarch) + ".tar.gz"
 	for _, asset := range release.Assets {
 		if asset.Name == expectedName {
 			return asset.BrowserDownloadURL
@@ -155,4 +167,65 @@ func getAssetURL(release *GithubRelease) string {
 	}
 
 	return ""
+}
+
+// replaceBinary extracts the file name from the tar.gz archive and puts it in
+// place of exe. The new binary is written to a temporary file in the same
+// directory and then renamed, so exe is never incomplete and the rename
+// does not cross filesystems.
+func replaceBinary(exe string, archive io.Reader, name string) error {
+	gz, err := gzip.NewReader(archive)
+	if err != nil {
+		return fmt.Errorf("reading archive: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("archive does not contain %s", name)
+		}
+		if err != nil {
+			return fmt.Errorf("reading archive: %w", err)
+		}
+
+		if hdr.Typeflag != tar.TypeReg || path.Clean(hdr.Name) != name {
+			continue
+		}
+		if hdr.Size > maxBinarySize {
+			return fmt.Errorf("%s in archive is too large (%d bytes)", name, hdr.Size)
+		}
+
+		return writeBinary(exe, tr)
+	}
+}
+
+// writeBinary writes r to a temporary file next to exe and renames it to exe.
+func writeBinary(exe string, r io.Reader) (err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(exe), ".fly-update-*")
+	if err != nil {
+		return fmt.Errorf("creating temporary file: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmp.Name())
+		}
+	}()
+
+	if _, err = io.Copy(tmp, r); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing new binary: %w", err)
+	}
+	if err = tmp.Close(); err != nil {
+		return fmt.Errorf("writing new binary: %w", err)
+	}
+	if err = os.Chmod(tmp.Name(), 0o755); err != nil {
+		return fmt.Errorf("making binary executable: %w", err)
+	}
+	if err = os.Rename(tmp.Name(), exe); err != nil {
+		return fmt.Errorf("replacing binary: %w", err)
+	}
+
+	return nil
 }

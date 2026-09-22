@@ -30,20 +30,24 @@ var updateCmd = &cobra.Command{
 			return errors.New("the update command must be run as root, please run 'sudo fly update'")
 		}
 
-		latestVersion, hasUpdate, err := utils.CheckForUpdates()
+		update, err := utils.CheckForUpdates(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("checking for updates: %w", err)
 		}
 
-		if !hasUpdate {
+		latest := update.Release.TagName
+		switch {
+		case !update.Comparable:
+			fmt.Printf("This is not a release build (version %s). Latest release: %s\n", version.Version, latest)
+		case !update.Available:
 			fmt.Println("You are already running the latest version.")
 			return nil
+		default:
+			fmt.Printf("New version available: %s\n", latest)
 		}
 
-		fmt.Printf("New version available: %s\n", latestVersion)
-
 		if !yesFlag {
-			fmt.Print("Do you want to update? (y/n): ")
+			fmt.Printf("Do you want to install %s? (y/n): ", latest)
 			var response string
 			// An empty or unreadable answer cancels the update.
 			_, _ = fmt.Scanln(&response)
@@ -54,11 +58,11 @@ var updateCmd = &cobra.Command{
 		}
 
 		fmt.Println("Updating...")
-		if err := utils.SelfUpdate(); err != nil {
+		if err := utils.SelfUpdate(cmd.Context(), update.Release); err != nil {
 			return fmt.Errorf("updating: %w", err)
 		}
 
-		fmt.Println("Update successful. Please restart fly cli.")
+		fmt.Printf("Updated to %s.\n", latest)
 		return nil
 	},
 }
