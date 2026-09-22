@@ -138,12 +138,15 @@ func parseNetDev(data []byte) (map[string]netCounters, error) {
 }
 
 // parseDefaultRoute returns the interface of the default route in
-// /proc/net/route, or "".
+// /proc/net/route, or "". The default route has destination and mask 0: a
+// VPN that routes 0.0.0.0/1 and 128.0.0.0/1 is not the default route.
+//
+//	Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
 func parseDefaultRoute(data []byte) string {
 	s := bufio.NewScanner(bytes.NewReader(data))
 	for s.Scan() {
 		fields := strings.Fields(s.Text())
-		if len(fields) >= 2 && fields[1] == "00000000" {
+		if len(fields) >= 8 && fields[1] == "00000000" && fields[7] == "00000000" {
 			return fields[0]
 		}
 	}
@@ -180,11 +183,15 @@ func parseUptime(data []byte) (uint64, error) {
 	return uint64(f), nil
 }
 
-// parseAptCheck reads the output of apt-check: "total;security".
+// parseAptCheck reads the output of apt-check: "total;security". apt-check
+// can write warnings before the result (on Ubuntu 24.04, for example for a
+// source that is configured two times), so only the last line counts.
 func parseAptCheck(out []byte) (total, security uint64, err error) {
-	a, b, ok := strings.Cut(strings.TrimSpace(string(out)), ";")
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	a, b, ok := strings.Cut(last, ";")
 	if !ok {
-		return 0, 0, fmt.Errorf("apt-check: unexpected output %q", out)
+		return 0, 0, fmt.Errorf("apt-check: unexpected output %q", last)
 	}
 	if total, err = strconv.ParseUint(a, 10, 64); err != nil {
 		return 0, 0, fmt.Errorf("apt-check: %w", err)

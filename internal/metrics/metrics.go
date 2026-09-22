@@ -53,8 +53,11 @@ type Collector struct {
 	aptCheck func(ctx context.Context) ([]byte, error)
 
 	prev *counters
+	// noInterface is true after the warning that no interface is counted.
+	noInterface bool
 
 	updatesAt       time.Time
+	updatesKnown    bool
 	updatesTotal    uint64
 	updatesSecurity uint64
 }
@@ -94,8 +97,12 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 	return c
 }
 
-// Sample measures the minute that ends at now.
+// Sample measures the minute that ends at now. At the first sample and then
+// each hour, it also counts the waiting updates for Status: apt-check takes
+// some seconds, and a sample comes before the sends of a report.
 func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
+	c.refreshUpdates(context.Background())
+
 	cur, err := c.read(now)
 	if err != nil {
 		return wire.Sample{}, err
@@ -124,6 +131,14 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 		s.CPUPercent = cpuPercent(prev.CPU, cur.CPU)
 	}
 	s.NetInBytes, s.NetOutBytes, s.NetCountersReset = netDelta(prev, cur)
+	if len(cur.Net) == 0 {
+		// No interface is counted, so the traffic is not known: it is not 0.
+		s.NetCountersReset = true
+		if !c.noInterface {
+			c.noInterface = true
+			c.log.Warn("no network interface to count: no interface has a hardware device, and the default route has none")
+		}
+	}
 
 	c.prev = &cur
 	if err := statefile.Write(c.path, cur); err != nil {
@@ -185,16 +200,23 @@ func (c *Collector) read(now time.Time) (counters, error) {
 	return counters{BootID: string(bytes.TrimSpace(bootID)), At: now, CPU: cpu, Net: net}, nil
 }
 
-// interfaces returns the network interfaces that have a hardware device. Thus
-// lo, docker0, the Docker bridges and the veth interfaces are left out, and
-// container traffic is not counted two or three times. If no interface has a
-// device, it returns the interface of the default route.
+// interfaces returns the network interfaces that have a hardware device and
+// are not a port of an other interface. Thus lo, docker0, the Docker bridges
+// and the veth interfaces are left out, and container traffic is not counted
+// two or three times. A port (of a bond or a bridge, or the Azure VF under
+// its netvsc interface) is left out too, because its traffic is also in the
+// interface above it. If no interface is left, it returns the interface of
+// the default route, for example the bond or the bridge.
 func (c *Collector) interfaces(all map[string]netCounters) []string {
 	var names []string
 	for name := range all {
-		if _, err := os.Lstat(c.file("sys/class/net", name, "device")); err == nil {
-			names = append(names, name)
+		if _, err := os.Lstat(c.file("sys/class/net", name, "device")); err != nil {
+			continue
 		}
+		if _, err := os.Lstat(c.file("sys/class/net", name, "master")); err == nil {
+			continue
+		}
+		names = append(names, name)
 	}
 	if len(names) > 0 {
 		return names
@@ -214,8 +236,9 @@ func (c *Collector) interfaces(all map[string]netCounters) []string {
 }
 
 // Status describes the server now. A value that cannot be read stays empty
-// or 0, and the problem goes to the log.
-func (c *Collector) Status(ctx context.Context) wire.Status {
+// or 0, and the problem goes to the log. The update counts come from the last
+// Sample.
+func (c *Collector) Status(context.Context) wire.Status {
 	s := wire.Status{Arch: runtime.GOARCH, Kernel: c.release()}
 
 	if _, err := os.Stat(c.file("var/run/reboot-required")); err == nil {
@@ -234,15 +257,14 @@ func (c *Collector) Status(ctx context.Context) wire.Status {
 		c.log.Warn("reading the uptime", "error", err)
 	}
 
-	c.refreshUpdates(ctx)
 	s.UpdatesTotal, s.UpdatesSecurity = c.updatesTotal, c.updatesSecurity
 
 	return s
 }
 
 // refreshUpdates counts the waiting updates at the first call and then each
-// hour. If apt-check fails, the counts are 0 until the next try. The contract
-// has no value for "not known" yet.
+// hour. If apt-check fails, the last counts stay. Without any count, they are
+// 0: the contract has no value for "not known" yet.
 func (c *Collector) refreshUpdates(ctx context.Context) {
 	if !c.updatesAt.IsZero() && time.Since(c.updatesAt) < updatesEvery {
 		return
@@ -253,13 +275,21 @@ func (c *Collector) refreshUpdates(ctx context.Context) {
 	defer cancel()
 
 	out, err := c.aptCheck(ctx)
+	var total, security uint64
 	if err == nil {
-		c.updatesTotal, c.updatesSecurity, err = parseAptCheck(out)
+		total, security, err = parseAptCheck(out)
 	}
 	if err != nil {
-		c.updatesTotal, c.updatesSecurity = 0, 0
-		c.log.Warn("cannot count the waiting updates; sending 0", "error", err)
+		if c.updatesKnown {
+			c.log.Warn("cannot count the waiting updates; keeping the last counts", "error", err)
+		} else {
+			c.log.Warn("cannot count the waiting updates; sending 0", "error", err)
+		}
+		return
 	}
+
+	c.updatesKnown = true
+	c.updatesTotal, c.updatesSecurity = total, security
 }
 
 // runAptCheck runs apt-check. It writes its result to stderr.
