@@ -137,7 +137,8 @@ func forEachSite(verb string, args ...string) error {
 		color.Yellow("%s site in %s", verb, entry.Name())
 		if err := docker.RunCompose(composePath, args...); err != nil {
 			// %v, not %w: a failed child process must not hide this summary.
-			errs = append(errs, fmt.Errorf("%s: %v", entry.Name(), err))
+			// The verb tells restart's stop failures from its start failures.
+			errs = append(errs, fmt.Errorf("%s %s: %v", strings.ToLower(verb), entry.Name(), err))
 		}
 	}
 
