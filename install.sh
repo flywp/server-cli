@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Install the latest release of fly. Run it as root:
-#   curl -sL https://raw.githubusercontent.com/flywp/server-cli/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/flywp/server-cli/main/install.sh | sudo bash
 
 set -euo pipefail
 
@@ -67,7 +67,7 @@ get_release_info() {
 
     local response="$TEMP_DIR/release.json"
     local status
-    status=$(curl -sSL -H "User-Agent: FlyWP-Installer" -o "$response" -w '%{http_code}' \
+    status=$(curl -sSL --connect-timeout 10 --max-time 60 --retry 3 -H "User-Agent: FlyWP-Installer" -o "$response" -w '%{http_code}' \
         "https://api.github.com/repos/${REPO}/releases/latest") ||
         error_exit "Failed to access the GitHub API. Please check your internet connection."
 
@@ -77,8 +77,8 @@ get_release_info() {
         *) error_exit "The GitHub API answered with HTTP $status." ;;
     esac
 
-    # The API answers with one key on each line.
-    TAG_NAME=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$response" | head -n 1)
+    # The API answers with JSON on one line. Take the first tag_name.
+    TAG_NAME=$(grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' "$response" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/') || true
     if [ -z "$TAG_NAME" ]; then
         error_exit "Failed to determine the latest release version."
     fi
@@ -89,7 +89,7 @@ get_release_info() {
 
 download_release() {
     info_msg "Downloading ${NAME}.tar.gz..."
-    curl -fsSL -o "$TEMP_DIR/${NAME}.tar.gz" "${DOWNLOAD_BASE}/${NAME}.tar.gz" ||
+    curl -fsSL --connect-timeout 10 --max-time 300 --retry 3 -o "$TEMP_DIR/${NAME}.tar.gz" "${DOWNLOAD_BASE}/${NAME}.tar.gz" ||
         error_exit "Failed to download ${DOWNLOAD_BASE}/${NAME}.tar.gz."
     info_msg "Download completed successfully."
 }
@@ -99,10 +99,12 @@ download_release() {
 verify_download() {
     info_msg "Verifying the download with checksums.txt..."
 
-    curl -fsSL -o "$TEMP_DIR/checksums.txt" "${DOWNLOAD_BASE}/checksums.txt" ||
+    curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 -o "$TEMP_DIR/checksums.txt" "${DOWNLOAD_BASE}/checksums.txt" ||
         error_exit "Failed to download checksums.txt of ${TAG_NAME}. The download cannot be checked, so it is not installed."
 
-    if ! (cd "$TEMP_DIR" && grep " ${NAME}.tar.gz\$" checksums.txt | sha256sum -c --status -); then
+    # The same rules as fly update: an optional "*" (binary mode) before the
+    # name, CRLF line ends. Two different sums for the file fail the check.
+    if ! (cd "$TEMP_DIR" && awk -v f="${NAME}.tar.gz" '{ sub(/\r$/, "") } $2 == f || $2 == "*" f { print $1 "  " f }' checksums.txt | sha256sum -c --status -); then
         error_exit "The checksum of ${NAME}.tar.gz does not agree with checksums.txt. The download is not installed."
     fi
 
@@ -114,31 +116,77 @@ install_binary() {
     # a binary that root runs must not belong to a different user.
     tar --no-same-owner -xzf "$TEMP_DIR/${NAME}.tar.gz" -C "$TEMP_DIR" "$NAME" ||
         error_exit "The archive does not contain ${NAME}."
-
-    # On a server with the monitoring agent, /usr/local/bin/fly is a link to
-    # the binary of the agent (~fly/.fly/bin/fly). Install through the link and
-    # keep the owner of the binary, so that the CLI and the agent use one binary.
-    local dest="$TARGET" owner="0:0"
-    if [ -L "$TARGET" ]; then
-        dest=$(readlink -f "$TARGET")
-        owner=$(stat -c '%u:%g' "$dest" 2>/dev/null || echo "0:0")
+    if [ ! -f "$TEMP_DIR/$NAME" ] || [ -L "$TEMP_DIR/$NAME" ]; then
+        error_exit "${NAME} in the archive is not a regular file."
     fi
 
-    info_msg "Installing to ${dest}..."
-    install -m 0755 -o "${owner%%:*}" -g "${owner##*:}" "$TEMP_DIR/$NAME" "${dest}.new" ||
-        error_exit "Failed to install the binary to ${dest}. Check your permissions."
-    # A rename is atomic: a running fly never sees a partial binary.
-    mv -f "${dest}.new" "$dest"
-
     if [ -f "$AGENT_UNIT" ]; then
-        info_msg "Restarting the monitoring agent..."
-        systemctl restart fly-agent || error_exit "fly is installed, but the monitoring agent did not restart."
+        install_for_agent
+    else
+        install_for_root
     fi
 
     command -v fly >/dev/null || error_exit "Installation failed: 'fly' command not found in PATH."
 
     success_msg "Installation of fly ${TAG_NAME} completed successfully!"
     info_msg "Verify with 'fly version'"
+}
+
+# Without the monitoring agent, fly is a root file in /usr/local/bin. A link
+# or a file that is there is replaced; a link is never followed.
+install_for_root() {
+    info_msg "Installing to ${TARGET}..."
+
+    local tmp
+    tmp=$(mktemp "$(dirname "$TARGET")/.fly-update-XXXXXX") ||
+        error_exit "Failed to create a temporary file next to ${TARGET}. Check your permissions."
+    if ! { cat "$TEMP_DIR/$NAME" >"$tmp" && chmod 0755 "$tmp" && chown 0:0 "$tmp"; }; then
+        rm -f "$tmp"
+        error_exit "Failed to write the binary next to ${TARGET}."
+    fi
+    # A rename is atomic: a running fly never sees a partial binary. -T
+    # replaces a link itself, not the file it points to.
+    mv -Tf "$tmp" "$TARGET" || { rm -f "$tmp"; error_exit "Failed to install the binary to ${TARGET}."; }
+}
+
+# With the monitoring agent, the binary is ~<user>/.fly/bin/fly, the command
+# of fly-agent.service, and /usr/local/bin/fly is a link to it. The folder
+# belongs to the agent user, so root does not write in it: the user could put
+# a link to a root file there. The agent user writes the new binary, and root
+# only gives it the file on stdin.
+install_for_agent() {
+    local user home bin
+    user=$(sed -n 's/^User=//p' "$AGENT_UNIT" | tail -n 1)
+    bin=$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$AGENT_UNIT" | tail -n 1)
+
+    if [ -z "$user" ] || [ "$user" = "root" ]; then
+        error_exit "${AGENT_UNIT} has no User= for the monitoring agent."
+    fi
+    home=$(getent passwd "$user" | cut -d: -f6) || true
+    if [ -z "$home" ] || [ "$bin" != "$home/.fly/bin/fly" ]; then
+        error_exit "${AGENT_UNIT} does not run ${home:-~$user}/.fly/bin/fly. The layout is not known, so fly is not installed."
+    fi
+
+    info_msg "Installing to ${bin} as ${user}..."
+    # shellcheck disable=SC2016 # $1 is for the inner shell
+    runuser -u "$user" -- sh -c 'set -e
+        tmp=$(mktemp "$(dirname "$1")/.fly-update-XXXXXX")
+        trap '"'"'rm -f "$tmp"'"'"' EXIT
+        cat >"$tmp"
+        chmod 0755 "$tmp"
+        mv -f "$tmp" "$1"
+        trap - EXIT' sh "$bin" <"$TEMP_DIR/$NAME" ||
+        error_exit "Failed to install the binary to ${bin} as ${user}."
+
+    # The CLI and the agent use the same binary. The old installer put a
+    # separate file here; replace it with the link.
+    ln -sfn "$bin" "${TARGET}.link-$$" && mv -Tf "${TARGET}.link-$$" "$TARGET" ||
+        error_exit "fly is installed in ${bin}, but ${TARGET} could not be linked to it."
+
+    # try-restart: an agent that an administrator stopped stays stopped.
+    info_msg "Restarting the monitoring agent..."
+    systemctl try-restart fly-agent ||
+        error_exit "fly is installed, but the monitoring agent did not restart."
 }
 
 main() {
