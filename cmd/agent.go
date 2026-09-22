@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/flywp/server-cli/internal/agent"
+	"github.com/flywp/server-cli/internal/metrics"
 	"github.com/spf13/cobra"
 )
 
@@ -33,7 +34,8 @@ FLY_AGENT_SERVER_ID and STATE_DIRECTORY from the environment.`,
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 		defer stop()
 
-		return agent.Run(ctx, cfg, slog.New(slog.NewTextHandler(os.Stderr, nil)), nil)
+		log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+		return agent.Run(ctx, cfg, log, metrics.New("/", cfg.StateDir, log))
 	},
 }
 

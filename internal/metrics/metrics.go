@@ -1,0 +1,292 @@
+// Package metrics measures a Linux server for the monitoring agent: CPU,
+// load, memory, swap, disk and network each minute, and the status of the
+// server. It needs no root.
+package metrics
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io/fs"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"time"
+
+	"github.com/flywp/server-cli/internal/agent/wire"
+	"github.com/flywp/server-cli/internal/statefile"
+)
+
+const (
+	// maxAge is the oldest previous reading that gives the traffic of one
+	// minute. The agent samples each 60 seconds; an older reading covers
+	// more than one minute.
+	maxAge = 90 * time.Second
+
+	// The update counts come from apt-check, which takes some seconds.
+	updatesEvery    = time.Hour
+	aptCheckPath    = "/usr/lib/update-notifier/apt-check"
+	aptCheckTimeout = 30 * time.Second
+)
+
+// counters is the previous reading. It is saved, so that the first sample
+// after an agent restart continues from it.
+type counters struct {
+	BootID string                 `json:"boot_id"`
+	At     time.Time              `json:"at"`
+	CPU    cpuTimes               `json:"cpu"`
+	Net    map[string]netCounters `json:"net"`
+}
+
+// Collector measures the server. Use New.
+type Collector struct {
+	root string
+	path string // counters.json
+	log  *slog.Logger
+
+	// statfs returns the size and the used space of the file system of a
+	// path, and release the kernel release. Tests replace them.
+	statfs   func(path string) (total, used uint64, err error)
+	release  func() string
+	aptCheck func(ctx context.Context) ([]byte, error)
+
+	prev *counters
+
+	updatesAt       time.Time
+	updatesTotal    uint64
+	updatesSecurity uint64
+}
+
+// New returns a collector that reads the files under root ("/" on a server)
+// and keeps its counters in stateDir.
+func New(root, stateDir string, log *slog.Logger) *Collector {
+	c := &Collector{
+		root:     root,
+		path:     filepath.Join(stateDir, "counters.json"),
+		log:      log,
+		statfs:   statfs,
+		release:  kernelRelease,
+		aptCheck: runAptCheck,
+	}
+
+	// Take a reading now, so that the first sample has a CPU value for the
+	// time since the start. The saved reading replaces it only when it is
+	// recent and from this boot: then the traffic continues without a gap.
+	now := time.Now()
+	if cur, err := c.read(now); err == nil {
+		cur.Net = nil
+		c.prev = &cur
+	}
+
+	var saved counters
+	err := statefile.Read(c.path, &saved)
+	switch {
+	case err == nil:
+		if c.prev != nil && saved.BootID == c.prev.BootID && now.Sub(saved.At) <= maxAge {
+			c.prev = &saved
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		log.Warn("ignoring the saved counters", "error", err)
+	}
+
+	return c
+}
+
+// Sample measures the minute that ends at now.
+func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
+	cur, err := c.read(now)
+	if err != nil {
+		return wire.Sample{}, err
+	}
+
+	var s wire.Sample
+	if s.Load1, err = parseFile(c, "proc/loadavg", parseLoad); err != nil {
+		return wire.Sample{}, err
+	}
+
+	mem, err := parseFile(c, "proc/meminfo", parseMeminfo)
+	if err != nil {
+		return wire.Sample{}, err
+	}
+	s.MemoryTotalBytes = mem.total
+	s.MemoryUsedBytes = mem.total - min(mem.available, mem.total)
+	s.SwapTotalBytes = mem.swapTotal
+	s.SwapUsedBytes = mem.swapTotal - min(mem.swapFree, mem.swapTotal)
+
+	if s.DiskTotalBytes, s.DiskUsedBytes, err = c.statfs(c.file("")); err != nil {
+		return wire.Sample{}, err
+	}
+
+	prev := c.prev
+	if prev != nil && prev.BootID == cur.BootID && cur.CPU.Total >= prev.CPU.Total {
+		s.CPUPercent = cpuPercent(prev.CPU, cur.CPU)
+	}
+	s.NetInBytes, s.NetOutBytes, s.NetCountersReset = netDelta(prev, cur)
+
+	c.prev = &cur
+	if err := statefile.Write(c.path, cur); err != nil {
+		c.log.Warn("saving the counters", "error", err)
+	}
+
+	return s, nil
+}
+
+// netDelta returns the traffic between two readings. It adds the interfaces
+// that both readings have, so a new or a removed interface makes no spike.
+// reset is true when the traffic of the minute is not known: no previous
+// reading, a reboot, a reading older than maxAge, or a counter that went back.
+func netDelta(prev *counters, cur counters) (in, out uint64, reset bool) {
+	if prev == nil || prev.Net == nil || prev.BootID != cur.BootID {
+		return 0, 0, true
+	}
+	if age := cur.At.Sub(prev.At); age <= 0 || age > maxAge {
+		return 0, 0, true
+	}
+
+	for name, c := range cur.Net {
+		p, ok := prev.Net[name]
+		if !ok {
+			continue
+		}
+		if c.In < p.In || c.Out < p.Out {
+			return 0, 0, true
+		}
+		in += c.In - p.In
+		out += c.Out - p.Out
+	}
+
+	return in, out, false
+}
+
+// read takes the counters now.
+func (c *Collector) read(now time.Time) (counters, error) {
+	cpu, err := parseFile(c, "proc/stat", parseCPU)
+	if err != nil {
+		return counters{}, err
+	}
+
+	all, err := parseFile(c, "proc/net/dev", parseNetDev)
+	if err != nil {
+		return counters{}, err
+	}
+
+	net := map[string]netCounters{}
+	for _, name := range c.interfaces(all) {
+		net[name] = all[name]
+	}
+
+	bootID, err := os.ReadFile(c.file("proc/sys/kernel/random/boot_id"))
+	if err != nil {
+		return counters{}, err
+	}
+
+	return counters{BootID: string(bytes.TrimSpace(bootID)), At: now, CPU: cpu, Net: net}, nil
+}
+
+// interfaces returns the network interfaces that have a hardware device. Thus
+// lo, docker0, the Docker bridges and the veth interfaces are left out, and
+// container traffic is not counted two or three times. If no interface has a
+// device, it returns the interface of the default route.
+func (c *Collector) interfaces(all map[string]netCounters) []string {
+	var names []string
+	for name := range all {
+		if _, err := os.Lstat(c.file("sys/class/net", name, "device")); err == nil {
+			names = append(names, name)
+		}
+	}
+	if len(names) > 0 {
+		return names
+	}
+
+	route, err := os.ReadFile(c.file("proc/net/route"))
+	if err != nil {
+		return nil
+	}
+	if name := parseDefaultRoute(route); name != "" {
+		if _, ok := all[name]; ok {
+			return []string{name}
+		}
+	}
+
+	return nil
+}
+
+// Status describes the server now. A value that cannot be read stays empty
+// or 0, and the problem goes to the log.
+func (c *Collector) Status(ctx context.Context) wire.Status {
+	s := wire.Status{Arch: runtime.GOARCH, Kernel: c.release()}
+
+	if _, err := os.Stat(c.file("var/run/reboot-required")); err == nil {
+		s.RebootRequired = true
+	}
+
+	if data, err := os.ReadFile(c.file("etc/os-release")); err == nil {
+		s.OS = parseOSRelease(data)
+	} else {
+		c.log.Warn("reading the OS name", "error", err)
+	}
+
+	if up, err := parseFile(c, "proc/uptime", parseUptime); err == nil {
+		s.UptimeSeconds = up
+	} else {
+		c.log.Warn("reading the uptime", "error", err)
+	}
+
+	c.refreshUpdates(ctx)
+	s.UpdatesTotal, s.UpdatesSecurity = c.updatesTotal, c.updatesSecurity
+
+	return s
+}
+
+// refreshUpdates counts the waiting updates at the first call and then each
+// hour. If apt-check fails, the counts are 0 until the next try. The contract
+// has no value for "not known" yet.
+func (c *Collector) refreshUpdates(ctx context.Context) {
+	if !c.updatesAt.IsZero() && time.Since(c.updatesAt) < updatesEvery {
+		return
+	}
+	c.updatesAt = time.Now()
+
+	ctx, cancel := context.WithTimeout(ctx, aptCheckTimeout)
+	defer cancel()
+
+	out, err := c.aptCheck(ctx)
+	if err == nil {
+		c.updatesTotal, c.updatesSecurity, err = parseAptCheck(out)
+	}
+	if err != nil {
+		c.updatesTotal, c.updatesSecurity = 0, 0
+		c.log.Warn("cannot count the waiting updates; sending 0", "error", err)
+	}
+}
+
+// runAptCheck runs apt-check. It writes its result to stderr.
+func runAptCheck(ctx context.Context) ([]byte, error) {
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, aptCheckPath)
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = time.Second
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+
+	return stderr.Bytes(), nil
+}
+
+// file returns the path of a file under the root.
+func (c *Collector) file(parts ...string) string {
+	return filepath.Join(append([]string{c.root}, parts...)...)
+}
+
+// parseFile reads a file under the root and parses it.
+func parseFile[T any](c *Collector, name string, parse func([]byte) (T, error)) (T, error) {
+	data, err := os.ReadFile(c.file(name))
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+
+	return parse(data)
+}
