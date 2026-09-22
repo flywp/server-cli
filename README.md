@@ -119,12 +119,49 @@ make build      # builds bin/fly with the version from git
 make test       # go test ./... -race
 make lint       # golangci-lint (pinned version, built with the module's Go)
 make vuln       # govulncheck
-make check      # fmt-check, vet, lint, test and vuln: run this before each merge
+make check      # fmt-check, vet, lint, test and vuln (CI runs the same)
 make release    # static linux/amd64 and linux/arm64 archives + checksums.txt in build/
 make help       # lists all targets
 ```
 
 `make release VERSION=v0.2.0` stamps a specific version. The release archives must keep the names `fly-linux-<arch>.tar.gz` with the binary `fly-linux-<arch>` inside: installed CLIs look for these names when they run `fly update`.
+
+CI runs `make check` and `make release` on every pull request and on every push to `develop` and `main`.
+
+### Releasing
+
+`main` is the release branch. To publish a release, tag a commit on `main` and push the tag:
+
+```bash
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
+```
+
+The Release workflow checks that the tag is on `main`, runs `make check`, builds the archives with `make release`, and creates the GitHub release with both archives and `checksums.txt`. A tag with a pre-release suffix, such as `v0.2.0-rc.1`, becomes a pre-release, so installed CLIs do not update to it.
+
+### Dev pre-releases
+
+To test a branch on real servers before it merges, publish a dev pre-release of its current commit:
+
+```bash
+make dev-version    # prints the tag, for example v0.2.0-dev.1a2b3c4
+make dev-release    # tags the commit and pushes the tag; CI publishes the pre-release
+```
+
+The version is the next minor version after the latest release, plus the short commit hash (`DEV_BASE=v0.1.2` overrides the first part). Pre-release tags can come from any branch. `make dev-release` refuses uncommitted changes, commits that are not pushed, and commits whose release workflow would publish the tag as a full release.
+
+`fly update` and `install.sh` only install the latest full release, so install a dev pre-release on a test server by hand:
+
+```bash
+tag=v0.2.0-dev.1a2b3c4 arch=amd64   # arch: amd64 or arm64 (uname -m: x86_64 or aarch64)
+base=https://github.com/flywp/server-cli/releases/download/$tag
+curl -fsSLO "$base/fly-linux-$arch.tar.gz" && curl -fsSLO "$base/checksums.txt"
+sha256sum -c --ignore-missing checksums.txt
+tar -xzf "fly-linux-$arch.tar.gz" && sudo install -m 0755 "fly-linux-$arch" /usr/local/bin/fly
+fly version
+```
+
+To build the same version locally without publishing it, run `make release VERSION=$(make -s dev-version)`.
 
 ## License
 
