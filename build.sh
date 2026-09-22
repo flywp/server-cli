@@ -17,7 +17,8 @@ build() {
     local OUTPUT="${CLI_NAME}-${GOOS}-${GOARCH}"
 
     echo "Building for ${GOOS}/${GOARCH}..."
-    GOOS=${GOOS} GOARCH=${GOARCH} go build -ldflags "${LDFLAGS}" -o "build/${OUTPUT}" .
+    # CGO_ENABLED=0 gives a static binary that does not depend on the host glibc
+    CGO_ENABLED=0 GOOS=${GOOS} GOARCH=${GOARCH} go build -trimpath -ldflags "-s -w ${LDFLAGS}" -o "build/${OUTPUT}" .
     echo "Done building ${OUTPUT}"
 
     create_archive "${OUTPUT}"
