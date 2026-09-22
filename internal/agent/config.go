@@ -1,0 +1,133 @@
+// Package agent is the FlyWP monitoring agent: the long-running mode of fly
+// that "fly agent run" starts. It follows the FlyWP monitoring agent
+// contract v0.2.1.
+package agent
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+)
+
+// The environment keys that the FlyWP installer writes to /etc/fly/agent.env,
+// and the key that systemd sets for StateDirectory=.
+const (
+	EnvURL      = "FLY_AGENT_URL"
+	EnvToken    = "FLY_AGENT_TOKEN"
+	EnvServerID = "FLY_AGENT_SERVER_ID"
+	EnvStateDir = "STATE_DIRECTORY"
+)
+
+// Config is the configuration of the agent.
+type Config struct {
+	// URL is the base URL of the control plane. The agent adds the paths
+	// of the contract to it.
+	URL *url.URL
+	// Token is the bearer token of the agent. It is opaque: the agent sends
+	// it and never parses it. Never log it.
+	Token string
+	// ServerID sets the second of the minute at which the agent works. The
+	// agent never sends it.
+	ServerID int64
+	// StateDir keeps the files that must survive a restart.
+	StateDir string
+}
+
+// Offset is the time after each full minute at which the agent works. It
+// spreads the reports of the fleet over the minute, and it does not change
+// between restarts.
+func (c Config) Offset() time.Duration {
+	return time.Duration(c.ServerID%60) * time.Second
+}
+
+// ConfigFromEnv reads the configuration from the environment. The error names
+// each key that is not set or not valid.
+func ConfigFromEnv(getenv func(string) string) (Config, error) {
+	var cfg Config
+	var errs []error
+
+	u, err := parseURL(getenv(EnvURL))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.URL = u
+
+	cfg.Token = getenv(EnvToken)
+	switch {
+	case cfg.Token == "":
+		errs = append(errs, fmt.Errorf("%s is not set", EnvToken))
+	case strings.ContainsFunc(cfg.Token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
+		errs = append(errs, fmt.Errorf("%s contains spaces or control characters", EnvToken))
+	}
+
+	if v := getenv(EnvServerID); v == "" {
+		errs = append(errs, fmt.Errorf("%s is not set", EnvServerID))
+	} else if id, err := strconv.ParseInt(v, 10, 64); err != nil || id < 0 {
+		errs = append(errs, fmt.Errorf("%s must be an integer of 0 or more, not %q", EnvServerID, v))
+	} else {
+		cfg.ServerID = id
+	}
+
+	dir, err := stateDir(getenv(EnvStateDir))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.StateDir = dir
+
+	return cfg, errors.Join(errs...)
+}
+
+// parseURL accepts an https URL. It also accepts http for a loopback host,
+// for tests and local development: plain http never leaves the machine.
+func parseURL(v string) (*url.URL, error) {
+	if v == "" {
+		return nil, fmt.Errorf("%s is not set", EnvURL)
+	}
+
+	u, err := url.Parse(strings.TrimRight(v, "/"))
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("%s is not a valid URL: %q", EnvURL, v)
+	}
+
+	switch {
+	case u.Scheme == "https":
+	case u.Scheme == "http" && isLoopback(u.Hostname()):
+	default:
+		return nil, fmt.Errorf("%s must be an https URL, not %q", EnvURL, v)
+	}
+
+	return u, nil
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// stateDir returns the first directory of STATE_DIRECTORY. systemd separates
+// the directories with ":" when a unit has more than one.
+func stateDir(v string) (string, error) {
+	if v == "" {
+		return "", fmt.Errorf("%s is not set (systemd sets it for StateDirectory=)", EnvStateDir)
+	}
+
+	dir, _, _ := strings.Cut(v, ":")
+	info, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", EnvStateDir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory: %s", EnvStateDir, dir)
+	}
+
+	return dir, nil
+}
