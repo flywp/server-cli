@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/flywp/server-cli/internal/agent/wire"
+	"github.com/oklog/ulid/v2"
 )
 
 // The value ranges of the contract (section 4, "Value ranges", and section 6).
@@ -25,6 +26,12 @@ func cleanSample(s wire.Sample) wire.Sample {
 	s.RecordedAt = s.RecordedAt.UTC().Truncate(time.Second)
 	s.CPUPercent = clamp(s.CPUPercent, 0, 100)
 	s.Load1 = clamp(s.Load1, 0, maxLoad)
+	for _, v := range []*uint64{
+		&s.MemoryUsedBytes, &s.MemoryTotalBytes, &s.SwapUsedBytes, &s.SwapTotalBytes,
+		&s.DiskUsedBytes, &s.DiskTotalBytes, &s.NetInBytes, &s.NetOutBytes,
+	} {
+		*v = clampInt(*v)
+	}
 	return s
 }
 
@@ -32,10 +39,20 @@ func cleanStatus(s wire.Status) wire.Status {
 	s.OS = truncate(s.OS, maxStatusTextLen)
 	s.Kernel = truncate(s.Kernel, maxStatusTextLen)
 	s.Arch = truncate(s.Arch, maxArchLen)
+	s.UpdatesTotal = clampInt(s.UpdatesTotal)
+	s.UpdatesSecurity = clampInt(s.UpdatesSecurity)
+	s.UptimeSeconds = clampInt(s.UptimeSeconds)
 	return s
 }
 
 func cleanEvent(e wire.Event) wire.Event {
+	// A command id that is not a ULID makes a 400, and a 400 drops all the
+	// events of the request. Without the id, the event changes nothing.
+	if e.CommandID != "" {
+		if _, err := ulid.ParseStrict(e.CommandID); err != nil {
+			e.CommandID = ""
+		}
+	}
 	e.Name = truncate(e.Name, maxEventNameLen)
 	if e.Data != nil {
 		d := *e.Data
@@ -44,6 +61,13 @@ func cleanEvent(e wire.Event) wire.Event {
 		e.Data = &d
 	}
 	return e
+}
+
+// clampInt keeps v in the range of a signed 64-bit integer: the control plane
+// (PHP) cannot hold a larger integer, and fails the request with a 500. The
+// agent would then send the same sample again for 24 hours.
+func clampInt(v uint64) uint64 {
+	return min(v, math.MaxInt64)
 }
 
 // clamp keeps v between lo and hi. NaN becomes lo.

@@ -173,7 +173,7 @@ func TestBackoffDoublesUpToTenMinutes(t *testing.T) {
 	})
 }
 
-func TestEventsGoFirstAndKeepTheirID(t *testing.T) {
+func TestEventsKeepTheirIDAndDoNotBlockTheMetrics(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cp := &fakeCP{eventsReply: func(call int, req *wire.EventsRequest) (*wire.EventsReply, error) {
 			if call == 0 {
@@ -191,16 +191,93 @@ func TestEventsGoFirstAndKeepTheirID(t *testing.T) {
 			t.Errorf("the resend has id %s, want the same id %s", b, a)
 		}
 
-		// The failure at start blocks the sends until minute 1: no metrics at
-		// minute 0, and at minute 1 the events go before the samples.
+		// The events wait 1 minute from the start, and are sent again at the
+		// first tick after it. The samples do not wait for the events.
 		if want := []time.Time{bubbleStart, at(1)}; !equalTimes(cp.eventsAt, want) {
 			t.Errorf("events at %v, want %v", cp.eventsAt, want)
 		}
-		if want := []time.Time{at(1)}; !equalTimes(cp.metricsAt, want) {
+		if want := []time.Time{at(0), at(1)}; !equalTimes(cp.metricsAt, want) {
 			t.Errorf("metrics at %v, want %v", cp.metricsAt, want)
 		}
-		if got := fmt.Sprint(cp.sampleCounts()); got != "[2]" {
-			t.Errorf("samples per request = %s, want [2]", got)
+	})
+}
+
+func TestMetricsGoWhileEventsKeepFailing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// For example a proxy that answers 404 for the events route only.
+		cp := &fakeCP{eventsReply: func(int, *wire.EventsRequest) (*wire.EventsReply, error) {
+			return nil, &StatusError{StatusCode: http.StatusNotFound}
+		}}
+
+		runFor(t, 30*time.Minute, t.TempDir(), cp, &fakeCollector{})
+
+		if got := len(cp.metrics); got != 30 {
+			t.Errorf("metrics requests = %d in 30 minutes, want 30", got)
+		}
+	})
+}
+
+func TestWaitsCountFromTheStartOfTheReport(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// The control plane takes 1 s to answer. A 401 wait of 5 minutes must
+		// still end at the tick 5 minutes later, not one tick after it.
+		cp := &fakeCP{metricsReply: func(call int, req *wire.MetricsRequest) (*wire.MetricsReply, error) {
+			time.Sleep(time.Second)
+			if call == 0 {
+				return nil, &StatusError{StatusCode: http.StatusUnauthorized}
+			}
+			return &wire.MetricsReply{Accepted: len(req.Samples)}, nil
+		}}
+
+		runFor(t, 6*time.Minute, t.TempDir(), cp, &fakeCollector{})
+
+		if want := []time.Time{at(0), at(5)}; !equalTimes(cp.metricsAt, want) {
+			t.Errorf("requests at %v, want %v", cp.metricsAt, want)
+		}
+	})
+}
+
+func TestARetryDoesNotWaitForTheNextInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		if err := statefile.Write(filepath.Join(dir, "state.json"), state{ReportInterval: 10}); err != nil {
+			t.Fatal(err)
+		}
+		cp := &fakeCP{metricsReply: func(call int, req *wire.MetricsRequest) (*wire.MetricsReply, error) {
+			if call == 0 {
+				return nil, &StatusError{StatusCode: http.StatusServiceUnavailable}
+			}
+			return &wire.MetricsReply{Accepted: len(req.Samples), ReportInterval: 10}, nil
+		}}
+
+		runFor(t, 11*time.Minute, dir, cp, &fakeCollector{})
+
+		// Report at minute 9 fails and waits 1 minute: the retry comes at
+		// minute 10, not at minute 19.
+		if want := []time.Time{at(9), at(10)}; !equalTimes(cp.metricsAt, want) {
+			t.Errorf("requests at %v, want %v", cp.metricsAt, want)
+		}
+	})
+}
+
+func TestTheReportTimeRunningOutIsNotAFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		if err := statefile.Write(filepath.Join(dir, "samples.json"), make([]wire.Sample, 1000)); err != nil {
+			t.Fatal(err)
+		}
+		// A healthy but slow control plane: 20 s for each request.
+		cp := &fakeCP{latency: 20 * time.Second}
+
+		rec := runFor(t, 3*time.Minute, dir, cp, &fakeCollector{})
+
+		if n := len(rec.times("the request failed; keeping its data")); n != 0 {
+			t.Errorf("%d failure warnings, want none for a slow but healthy control plane", n)
+		}
+		// Each report sends 2 requests in its 45 s (the 3rd is cut), and the
+		// next report goes on at once: 1001 samples in 3 reports.
+		if got := fmt.Sprint(cp.sampleCounts()); got != "[240 240 240 240 43]" && got != "[240 240 240 240 42]" {
+			t.Errorf("samples per request = %s, want the whole queue sent in 3 reports", got)
 		}
 	})
 }

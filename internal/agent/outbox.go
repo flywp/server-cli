@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 
@@ -41,9 +42,12 @@ func loadOutbox(dir string, log *slog.Logger) *outbox {
 // queue: to stop would only make systemd start the agent again.
 func loadQueue[T any](o *outbox, name string) []T {
 	var q []T
-	err := statefile.Read(filepath.Join(o.dir, name), &q)
+	path := filepath.Join(o.dir, name)
+	err := statefile.Read(path, &q)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		o.log.Error("dropping a queue that cannot be read", "file", name, "error", err)
+		// Keep the file for a person to examine: the next save replaces it.
+		_ = os.Rename(path, path+".corrupt")
+		o.log.Error("dropping a queue that cannot be read; the file is kept as "+name+".corrupt", "file", name, "error", err)
 		return nil
 	}
 
@@ -54,6 +58,7 @@ func (o *outbox) addSample(s wire.Sample) {
 	o.samples = append(o.samples, s)
 	if over := len(o.samples) - maxSamples; over > 0 {
 		o.samples = slices.Delete(o.samples, 0, over)
+		o.log.Warn("the sample queue is full (24 hours); dropping the oldest sample", "dropped", over)
 	}
 	o.save("samples.json", o.samples)
 }
@@ -68,6 +73,7 @@ func (o *outbox) addEvent(e wire.Event) {
 	o.events = append(o.events, e)
 	if over := len(o.events) - maxEvents; over > 0 {
 		o.events = slices.Delete(o.events, 0, over)
+		o.log.Warn("the event queue is full; dropping the oldest event", "dropped", over)
 	}
 	o.save("events.json", o.events)
 }

@@ -24,8 +24,12 @@ func TestOutboxDropsTheOldestSample(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	o := loadOutbox(dir, slog.New(&recorder{}))
+	rec := &recorder{}
+	o := loadOutbox(dir, slog.New(rec))
 	o.addSample(wire.Sample{CPUPercent: maxSamples})
+	if len(rec.times("the sample queue is full (24 hours); dropping the oldest sample")) != 1 {
+		t.Error("want a warning when the full queue drops a sample")
+	}
 
 	if len(o.samples) != maxSamples {
 		t.Fatalf("queue holds %d samples, want %d", len(o.samples), maxSamples)
@@ -95,8 +99,11 @@ func TestOutboxWithAQueueThatCannotBeRead(t *testing.T) {
 	if len(o.samples) != 0 {
 		t.Errorf("samples = %d, want an empty queue", len(o.samples))
 	}
-	if len(rec.times("dropping a queue that cannot be read")) != 1 {
+	if len(rec.times("dropping a queue that cannot be read; the file is kept as samples.json.corrupt")) != 1 {
 		t.Error("want an error log line for the queue that cannot be read")
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "samples.json.corrupt")); err != nil || string(data) != "[{" {
+		t.Errorf("samples.json.corrupt = %q, %v; want the file kept for a person to examine", data, err)
 	}
 }
 
@@ -140,5 +147,26 @@ func TestCleanTextFields(t *testing.T) {
 	e := cleanEvent(wire.Event{Name: strings.Repeat("n", 70), Data: &wire.EventData{Version: strings.Repeat("v", 40), Error: strings.Repeat("e", 2500)}})
 	if len(e.Name) != maxEventNameLen || len(e.Data.Version) != maxVersionLen || len(e.Data.Error) != maxErrorLen {
 		t.Errorf("event lengths = %d, %d, %d; want %d, %d, %d", len(e.Name), len(e.Data.Version), len(e.Data.Error), maxEventNameLen, maxVersionLen, maxErrorLen)
+	}
+}
+
+func TestCleanKeepsIntegersInTheRangeOfPHP(t *testing.T) {
+	s := cleanSample(wire.Sample{NetInBytes: math.MaxUint64, MemoryTotalBytes: 1 << 63, DiskUsedBytes: 42})
+	if s.NetInBytes != math.MaxInt64 || s.MemoryTotalBytes != math.MaxInt64 || s.DiskUsedBytes != 42 {
+		t.Errorf("cleanSample() = %d, %d, %d; want %d, %d, 42", s.NetInBytes, s.MemoryTotalBytes, s.DiskUsedBytes, uint64(math.MaxInt64), uint64(math.MaxInt64))
+	}
+
+	st := cleanStatus(wire.Status{UpdatesTotal: math.MaxUint64, UpdatesSecurity: 1 << 63, UptimeSeconds: math.MaxUint64})
+	if st.UpdatesTotal != math.MaxInt64 || st.UpdatesSecurity != math.MaxInt64 || st.UptimeSeconds != math.MaxInt64 {
+		t.Errorf("cleanStatus() = %+v, want each count at most %d", st, uint64(math.MaxInt64))
+	}
+}
+
+func TestCleanEventDropsACommandIDThatIsNotAULID(t *testing.T) {
+	if e := cleanEvent(wire.Event{CommandID: "not-a-ulid"}); e.CommandID != "" {
+		t.Errorf("command_id = %q, want it removed", e.CommandID)
+	}
+	if e := cleanEvent(wire.Event{CommandID: "01JBX0000000000000000000AA"}); e.CommandID != "01JBX0000000000000000000AA" {
+		t.Errorf("command_id = %q, want the ULID kept", e.CommandID)
 	}
 }

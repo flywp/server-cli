@@ -38,33 +38,53 @@ const (
 	// refused: the control plane will never accept the data. Drop it, and
 	// send the next request.
 	refused
-	// later: keep the data, and send nothing until retryAt.
+	// later: keep the data, and send no more of it now.
 	later
 )
 
-// send sends the events and then the samples. With report false, it sends
-// only the events.
-func (a *agent) send(ctx context.Context, report bool) {
-	if wait := time.Until(a.retryAt); wait > 0 {
-		a.log.Debug("waiting before the next send", "wait", wait)
-		return
-	}
+// backoff is the wait of one kind of request after a failure. Each kind
+// waits on its own: a broken events route must not stop the metrics.
+type backoff struct {
+	// retryAt is the earliest time of the next request, and failures is the
+	// number of failed requests in a row.
+	retryAt  time.Time
+	failures int
+}
 
+// waiting reports whether the request must wait at the time of the report.
+func (b *backoff) waiting(at time.Time) bool {
+	return at.Before(b.retryAt)
+}
+
+// send sends the events and then, with report, the samples. It returns true
+// when no event is left in the queue, so that the commands can come next.
+func (a *agent) send(ctx context.Context, report bool) (eventsSent bool) {
+	// The waits count from the start of the report, not from the end of a
+	// request: a 5 minute wait then ends at the tick 5 minutes later.
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, sendBudget)
 	defer cancel()
 
-	if a.sendEvents(ctx) && report {
-		a.sendSamples(ctx)
+	eventsSent = a.sendEvents(ctx, start)
+	if report {
+		a.samplesSent = a.sendSamples(ctx, start)
 	}
+
+	return eventsSent
 }
 
-// sendEvents sends the queued events, oldest first. It returns false when the
-// agent must send nothing more now.
-func (a *agent) sendEvents(ctx context.Context) bool {
+// sendEvents sends the queued events, oldest first. It returns true when the
+// event queue is empty.
+func (a *agent) sendEvents(ctx context.Context, start time.Time) bool {
+	if a.eventsWait.waiting(start) {
+		a.log.Debug("waiting before the next events request", "until", a.eventsWait.retryAt)
+		return len(a.outbox.events) == 0
+	}
+
 	for len(a.outbox.events) > 0 {
 		n := min(len(a.outbox.events), maxEventsPerRequest)
 		_, err := a.cp.PostEvents(ctx, &wire.EventsRequest{Events: a.outbox.events[:n]})
-		if a.outcome(err, "events", n) == later {
+		if a.outcome(ctx, &a.eventsWait, start, err, "events", n) == later {
 			return false
 		}
 		a.outbox.dropEvents(n)
@@ -74,10 +94,14 @@ func (a *agent) sendEvents(ctx context.Context) bool {
 }
 
 // sendSamples sends the queued samples, oldest first, with the status of the
-// server in each request.
-func (a *agent) sendSamples(ctx context.Context) {
+// server in each request. It returns true when the sample queue is empty.
+func (a *agent) sendSamples(ctx context.Context, start time.Time) bool {
 	if len(a.outbox.samples) == 0 {
-		return
+		return true
+	}
+	if a.metricsWait.waiting(start) {
+		a.log.Debug("waiting before the next metrics request", "until", a.metricsWait.retryAt)
+		return false
 	}
 
 	var status *wire.Status
@@ -94,9 +118,9 @@ func (a *agent) sendSamples(ctx context.Context) {
 			Samples:      a.outbox.samples[:n],
 		})
 
-		switch a.outcome(err, "samples", n) {
+		switch a.outcome(ctx, &a.metricsWait, start, err, "samples", n) {
 		case later:
-			return
+			return false
 		case sent:
 			if len(reply.Rejected) > 0 {
 				a.log.Warn("the control plane rejected some samples", "rejected", len(reply.Rejected), "first_reason", reply.Rejected[0].Reason)
@@ -105,48 +129,60 @@ func (a *agent) sendSamples(ctx context.Context) {
 		}
 		a.outbox.dropSamples(n)
 	}
+
+	return true
 }
 
-// outcome applies the rules of the contract (sections 4 and 6) to the result
-// of a request that carried n items of what.
-func (a *agent) outcome(err error, what string, n int) outcome {
+// outcome applies the rules of the contract (sections 4 to 6) to the result
+// of a request that carried n items of what. The waits go into b and count
+// from start.
+func (a *agent) outcome(ctx context.Context, b *backoff, start time.Time, err error, what string, n int) outcome {
 	if err == nil {
-		a.failures = 0
+		b.failures = 0
 		return sent
+	}
+
+	// The time of this report ran out, or the agent stops. That is not a
+	// failure of the control plane: the data goes with the next report.
+	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			a.log.Info("the time for this report is used; the rest goes with the next report", "request", what)
+		}
+		return later
 	}
 
 	var statusErr *StatusError
 	if errors.As(err, &statusErr) {
 		switch code := statusErr.StatusCode; {
 		case code == http.StatusBadRequest:
-			a.failures = 0
-			a.log.Error("the control plane refused the "+what+" as not valid; dropping them", "count", n)
+			b.failures = 0
+			a.log.Error("the control plane refused the request as not valid; dropping its data", "request", what, "count", n, "reply", statusErr.Body)
 			return refused
 		case code == http.StatusUnprocessableEntity && what == "samples":
-			a.failures = 0
-			a.log.Warn("the control plane rejected every sample; dropping them", "count", n)
+			b.failures = 0
+			a.log.Warn("the control plane rejected every sample; dropping them", "count", n, "reply", statusErr.Body)
 			return refused
 		case code == http.StatusUnauthorized:
-			a.retryAt = time.Now().Add(unauthorizedWait)
-			a.log.Error("the control plane does not accept the token; keeping the data", "retry_in", unauthorizedWait)
+			b.retryAt = start.Add(unauthorizedWait)
+			a.log.Error("the control plane does not accept the token; keeping the data", "request", what, "retry_in", unauthorizedWait)
 			return later
 		case code == http.StatusTooManyRequests:
 			wait := statusErr.RetryAfter
 			if wait <= 0 {
 				wait = throttledWait
 			}
-			a.retryAt = time.Now().Add(wait)
-			a.log.Warn("the control plane asks the agent to wait; keeping the data", "retry_in", wait)
+			b.retryAt = start.Add(wait)
+			a.log.Warn("the control plane asks the agent to wait; keeping the data", "request", what, "retry_in", wait)
 			return later
 		}
 	}
 
 	// A 5xx, another status or a network error: keep the data and wait longer
 	// after each failure.
-	a.failures++
-	wait := min(firstBackoff<<min(a.failures-1, 4), maxBackoff)
-	a.retryAt = time.Now().Add(wait)
-	a.log.Warn("sending "+what+" failed; keeping them", "error", err, "retry_in", wait)
+	b.failures++
+	wait := min(firstBackoff<<min(b.failures-1, 4), maxBackoff)
+	b.retryAt = start.Add(wait)
+	a.log.Warn("the request failed; keeping its data", "request", what, "error", err, "retry_in", wait)
 
 	return later
 }

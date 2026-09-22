@@ -55,10 +55,11 @@ type agent struct {
 	// last is the time of the last tick.
 	last time.Time
 
-	// retryAt is the earliest time of the next send, and failures is the
-	// number of failed sends in a row.
-	retryAt  time.Time
-	failures int
+	// The waits of the events and the metrics requests after a failure, and
+	// whether the last report sent all samples.
+	eventsWait  backoff
+	metricsWait backoff
+	samplesSent bool
 }
 
 // Run runs the agent until ctx is done. Only one agent can run with the same
@@ -143,10 +144,17 @@ func (a *agent) tick(ctx context.Context, now time.Time) {
 	}
 
 	a.pending++
-	if a.pending >= a.interval {
+	if a.pending < a.interval {
+		return
+	}
+
+	a.log.Debug("report")
+	a.send(ctx, true)
+
+	// Samples that could not go are tried again at the next tick, when their
+	// wait allows it, not only after the next full interval.
+	if a.samplesSent {
 		a.pending = 0
-		a.log.Debug("report")
-		a.send(ctx, true)
 	}
 }
 

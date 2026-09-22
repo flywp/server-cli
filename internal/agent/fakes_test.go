@@ -20,12 +20,24 @@ type fakeCP struct {
 	events    []wire.EventsRequest
 	eventsAt  []time.Time
 
+	// latency is the time of each metrics request. The request ends early
+	// when its context ends, like a real HTTP request.
+	latency time.Duration
+
 	// The reply funcs get the number of the call, from 0.
 	metricsReply func(call int, req *wire.MetricsRequest) (*wire.MetricsReply, error)
 	eventsReply  func(call int, req *wire.EventsRequest) (*wire.EventsReply, error)
 }
 
-func (f *fakeCP) PostMetrics(_ context.Context, req *wire.MetricsRequest) (*wire.MetricsReply, error) {
+func (f *fakeCP) PostMetrics(ctx context.Context, req *wire.MetricsRequest) (*wire.MetricsReply, error) {
+	if f.latency > 0 {
+		select {
+		case <-time.After(f.latency):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
