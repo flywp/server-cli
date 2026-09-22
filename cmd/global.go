@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -61,18 +60,13 @@ var statusCmd = &cobra.Command{
 			color.Green("Nginx directory exists")
 		}
 
-		// check if docker is installed
-		if output, err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").CombinedOutput(); err != nil {
-			color.Red("Docker is not installed")
-		} else {
-			color.Green("Docker is installed, version: %s", strings.TrimSpace(string(output)))
-		}
-
-		// check if docker is running
-		if _, err := exec.Command("docker", "version").CombinedOutput(); err != nil {
-			color.Red("Docker is not running")
-		} else {
-			color.Green("Docker is running")
+		// check the docker CLI, the compose plugin and the daemon separately
+		for _, s := range docker.Status(cmd.Context()) {
+			if s.Err != nil {
+				color.Red("%s is not available: %s", s.Part, s.Err.Detail)
+			} else {
+				color.Green("%s is available: %s", s.Part, s.Info)
+			}
 		}
 	},
 }
@@ -153,6 +147,7 @@ func init() {
 	sitesCmd.AddCommand(sitesStartCmd)
 	sitesCmd.AddCommand(sitesStopCmd)
 	sitesCmd.AddCommand(restartSitesCmd)
+	requireDocker(sitesStartCmd, sitesStopCmd, restartSitesCmd)
 
 	rootCmd.AddCommand(sitesCmd)
 	rootCmd.AddCommand(statusCmd)
