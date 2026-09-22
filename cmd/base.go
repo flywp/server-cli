@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"os"
+	"fmt"
 
 	"github.com/fatih/color"
 	"github.com/flywp/server-cli/internal/docker"
@@ -18,50 +18,51 @@ var baseCmd = &cobra.Command{
 var baseStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start base services",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := docker.RunCompose(baseCompose, "up", "-d"); err != nil {
-			color.Red("Error starting base services: %v", err)
-			os.Exit(1)
-			return
+			return fmt.Errorf("starting base services: %w", err)
 		}
 
 		if err := docker.RunCompose(baseCompose, "ps"); err != nil {
-			color.Red("Error checking status of base services: %v", err)
+			return fmt.Errorf("checking status of base services: %w", err)
 		}
 
 		color.Green("Base services started successfully")
+		return nil
 	},
 }
 
 var baseStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop base services",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := docker.RunCompose(baseCompose, "down"); err != nil {
-			color.Red("Error stopping base services:", err)
+			return fmt.Errorf("stopping base services: %w", err)
 		}
 
 		color.Green("Base services stopped successfully")
+		return nil
 	},
 }
 
 var baseRestartCmd = &cobra.Command{
 	Use:   "restart",
 	Short: "Restart base services",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := docker.RunCompose(baseCompose, "down"); err != nil {
-			color.Red("Error stopping base services:", err)
+			return fmt.Errorf("stopping base services: %w", err)
 		}
 
 		if err := docker.RunCompose(baseCompose, "up", "-d"); err != nil {
-			color.Red("Error starting base services:", err)
+			return fmt.Errorf("starting base services: %w", err)
 		}
 
 		if err := docker.RunCompose(baseCompose, "ps"); err != nil {
-			color.Red("Error checking status of base services:", err)
+			return fmt.Errorf("checking status of base services: %w", err)
 		}
 
 		color.Green("Base services restarted successfully")
+		return nil
 	},
 }
 
