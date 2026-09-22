@@ -27,6 +27,11 @@ DEV_VERSION = $(DEV_BASE)-dev.$(shell git rev-parse --short=7 HEAD)
 # for the binary fly-<os>-<arch> in it, so do not change these names.
 RELEASE_PLATFORMS := linux/amd64 linux/arm64
 
+# Release archives hold the binary as root:root, not as the user who built
+# it: an installer that keeps the owner must not give the binary to a user.
+# GNU tar (CI) and bsdtar (macOS) name the options differently.
+TAR_OWNER := $(shell tar --version 2>/dev/null | grep -q GNU && echo '--owner=0 --group=0 --numeric-owner' || echo '--uid 0 --gid 0 --numeric-owner')
+
 # "go run pkg@version" builds each tool with the Go version of this module,
 # so a tool cannot be older than go.mod.
 GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
@@ -62,7 +67,7 @@ release: ## Build the static release archives and checksums.txt in build/
 		os=$${platform%/*}; arch=$${platform#*/}; out=$(BINARY)-$$os-$$arch; \
 		echo "Building $$out ($(VERSION))"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o build/$$out . || exit 1; \
-		COPYFILE_DISABLE=1 tar -czf build/$$out.tar.gz -C build $$out || exit 1; \
+		COPYFILE_DISABLE=1 tar $(TAR_OWNER) -czf build/$$out.tar.gz -C build $$out || exit 1; \
 	done
 	cd build && (command -v sha256sum >/dev/null 2>&1 && sha256sum *.tar.gz || shasum -a 256 *.tar.gz) > checksums.txt
 
