@@ -66,6 +66,24 @@ func TestNextTick(t *testing.T) {
 	}
 }
 
+func TestNextAfterAClockStepBack(t *testing.T) {
+	base := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	last := base.Add(17 * time.Second)
+
+	// The wall clock stepped back 2 s after the tick at :17, so the timer
+	// fired at :15 wall time. The next tick must be in the next minute.
+	if got, want := nextAfter(base.Add(15*time.Second), last, 17*time.Second), base.Add(77*time.Second); !got.Equal(want) {
+		t.Errorf("nextAfter() = %s, want %s: never the same tick two times", got.Format(time.TimeOnly), want.Format(time.TimeOnly))
+	}
+	// Without a step, the last tick does not change the result.
+	if got, want := nextAfter(base.Add(30*time.Second), last, 17*time.Second), base.Add(77*time.Second); !got.Equal(want) {
+		t.Errorf("nextAfter() = %s, want %s", got.Format(time.TimeOnly), want.Format(time.TimeOnly))
+	}
+	if got, want := nextAfter(base, time.Time{}, 17*time.Second), last; !got.Equal(want) {
+		t.Errorf("nextAfter() without a last tick = %s, want %s", got.Format(time.TimeOnly), want.Format(time.TimeOnly))
+	}
+}
+
 func TestLoopTicksAtTheOffsetAndReportsEachInterval(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()

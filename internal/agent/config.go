@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // The environment keys that the FlyWP installer writes to /etc/fly/agent.env,
@@ -62,8 +61,10 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	switch {
 	case cfg.Token == "":
 		errs = append(errs, fmt.Errorf("%s is not set", EnvToken))
-	case strings.ContainsFunc(cfg.Token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
-		errs = append(errs, fmt.Errorf("%s contains spaces or control characters", EnvToken))
+	case strings.ContainsFunc(cfg.Token, func(r rune) bool { return r < '!' || r > '~' }):
+		// The token is opaque, but it goes in a header: only printable ASCII
+		// (the format is flyagt_ and base62) is safe there.
+		errs = append(errs, fmt.Errorf("%s may contain only printable ASCII characters, without spaces", EnvToken))
 	}
 
 	if v := getenv(EnvServerID); v == "" {
@@ -84,7 +85,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 }
 
 // parseURL accepts an https URL. It also accepts http for a loopback host,
-// for tests and local development: plain http never leaves the machine.
+// for tests and local development: plain http never leaves the machine. The
+// URL is a base URL only: no user, password, query or fragment. An error
+// never shows a password.
 func parseURL(v string) (*url.URL, error) {
 	if v == "" {
 		return nil, fmt.Errorf("%s is not set", EnvURL)
@@ -92,21 +95,25 @@ func parseURL(v string) (*url.URL, error) {
 
 	u, err := url.Parse(strings.TrimRight(v, "/"))
 	if err != nil || u.Host == "" {
-		return nil, fmt.Errorf("%s is not a valid URL: %q", EnvURL, v)
+		return nil, fmt.Errorf("%s is not a valid URL", EnvURL)
 	}
 
 	switch {
+	case u.User != nil:
+		return nil, fmt.Errorf("%s must not contain a user or a password: %s", EnvURL, u.Redacted())
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
+		return nil, fmt.Errorf("%s must not contain a query or a fragment: %s", EnvURL, u.Redacted())
 	case u.Scheme == "https":
 	case u.Scheme == "http" && isLoopback(u.Hostname()):
 	default:
-		return nil, fmt.Errorf("%s must be an https URL, not %q", EnvURL, v)
+		return nil, fmt.Errorf("%s must be an https URL, not %s", EnvURL, u.Redacted())
 	}
 
 	return u, nil
 }
 
 func isLoopback(host string) bool {
-	if host == "localhost" {
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)

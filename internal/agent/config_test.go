@@ -78,7 +78,13 @@ func TestConfigFromEnvErrors(t *testing.T) {
 		{"other scheme", EnvURL, "ftp://app.flywp.com", "must be an https URL"},
 		{"no host", EnvURL, "https://", "not a valid URL"},
 		{"no token", EnvToken, "", "FLY_AGENT_TOKEN is not set"},
-		{"token with newline", EnvToken, "flyagt_abc\nX-Other: 1", "FLY_AGENT_TOKEN contains spaces"},
+		{"token with newline", EnvToken, "flyagt_abc\nX-Other: 1", "FLY_AGENT_TOKEN may contain only printable ASCII"},
+		{"token with a space", EnvToken, "flyagt_abc def", "FLY_AGENT_TOKEN may contain only printable ASCII"},
+		{"token that is not ASCII", EnvToken, "flyagt_é", "FLY_AGENT_TOKEN may contain only printable ASCII"},
+		{"token with invalid UTF-8", EnvToken, "flyagt_\x85", "FLY_AGENT_TOKEN may contain only printable ASCII"},
+		{"token with a zero-width space", EnvToken, "flyagt_\u200b", "FLY_AGENT_TOKEN may contain only printable ASCII"},
+		{"URL with a query", EnvURL, "https://app.flywp.com?x=1", "must not contain a query"},
+		{"URL with a fragment", EnvURL, "https://app.flywp.com#x", "must not contain a query or a fragment"},
 		{"no server id", EnvServerID, "", "FLY_AGENT_SERVER_ID is not set"},
 		{"negative server id", EnvServerID, "-1", "FLY_AGENT_SERVER_ID must be an integer"},
 		{"text server id", EnvServerID, "abc", "FLY_AGENT_SERVER_ID must be an integer"},
@@ -115,12 +121,27 @@ func TestConfigFromEnvNamesEachProblem(t *testing.T) {
 	}
 }
 
-func TestConfigAcceptsLoopbackHTTP(t *testing.T) {
-	for _, u := range []string{"http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080"} {
+func TestConfigAcceptsHTTPSAndLoopbackHTTP(t *testing.T) {
+	for _, u := range []string{"http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "http://LOCALHOST:8080", "HTTPS://app.flywp.com"} {
 		env := validEnv(t)
 		env[EnvURL] = u
 		if _, err := ConfigFromEnv(getenv(env)); err != nil {
-			t.Errorf("ConfigFromEnv(%s) error = %v, want loopback http accepted", u, err)
+			t.Errorf("ConfigFromEnv(%s) error = %v, want it accepted", u, err)
+		}
+	}
+}
+
+func TestConfigURLWithPasswordDoesNotShowIt(t *testing.T) {
+	for _, u := range []string{"https://user:s3cret@app.flywp.com", "http://user:s3cret@example.com"} {
+		env := validEnv(t)
+		env[EnvURL] = u
+
+		_, err := ConfigFromEnv(getenv(env))
+		if err == nil || !strings.Contains(err.Error(), "must not contain a user or a password") {
+			t.Errorf("ConfigFromEnv(%s) error = %v, want a refusal", u, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("error %q shows the password", err)
 		}
 	}
 }

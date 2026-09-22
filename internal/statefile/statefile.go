@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 )
 
+// tempSuffix marks the temporary files of Write.
+const tempSuffix = ".tmp-"
+
 // Write stores v as JSON in path. It writes a temporary file in the same
 // directory, syncs it and renames it over path, so path always holds a
 // complete file, also after a crash or a power loss.
@@ -18,7 +21,7 @@ func Write(path string, v any) (err error) {
 	}
 
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+tempSuffix+"*")
 	if err != nil {
 		return err
 	}
@@ -64,4 +67,13 @@ func Read(path string, v any) error {
 	}
 
 	return nil
+}
+
+// RemoveTemp removes the temporary files that Write leaves in dir after a
+// crash. Call it before any Write in dir starts.
+func RemoveTemp(dir string) {
+	matches, _ := filepath.Glob(filepath.Join(dir, ".*"+tempSuffix+"*"))
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
 }

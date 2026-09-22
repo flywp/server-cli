@@ -123,11 +123,41 @@ func TestRetryAfter(t *testing.T) {
 		"soon":                          0,
 		"Tue, 22 Sep 2026 10:01:30 GMT": 90 * time.Second,
 		"Tue, 22 Sep 2026 09:00:00 GMT": 0,
+		// One bad reply must not stop the sends for years.
+		"31536000":                      time.Hour,
+		"10000000000":                   time.Hour,
+		"20000000000":                   time.Hour,
+		"Tue, 22 Sep 2027 10:00:00 GMT": time.Hour,
 	}
 
 	for v, want := range tests {
 		if got := retryAfter(v, now); got != want {
 			t.Errorf("retryAfter(%q) = %v, want %v", v, got, want)
 		}
+	}
+}
+
+func TestClientDoesNotFollowRedirects(t *testing.T) {
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		_, _ = w.Write([]byte(`{"report_interval": 3}`))
+	}))
+	defer target.Close()
+
+	for _, code := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+			// For example a proxy during a deploy, or a redirect to plain http.
+			http.Redirect(w, r, target.URL+r.URL.Path, code)
+		})
+
+		err := c.do(context.Background(), http.MethodPost, "agent/v1/metrics", map[string]int{"samples": 5}, nil)
+		var statusErr *StatusError
+		if !errors.As(err, &statusErr) || statusErr.StatusCode != code {
+			t.Errorf("do() after a %d = %v, want a *StatusError with %d: the samples must stay in the queue", code, err, code)
+		}
+	}
+	if targetHits != 0 {
+		t.Errorf("the redirect target got %d requests, want none (the token must not go there)", targetHits)
 	}
 }

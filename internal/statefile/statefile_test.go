@@ -101,3 +101,29 @@ func TestReadCorrupt(t *testing.T) {
 		t.Fatal("Read() = nil, want an error for invalid JSON")
 	}
 }
+
+func TestRemoveTemp(t *testing.T) {
+	dir := t.TempDir()
+	if err := Write(filepath.Join(dir, "state.json"), state{Interval: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".state.json.tmp-123", ".samples.json.tmp-9"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	RemoveTemp(dir)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "state.json" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("directory holds %v, want only state.json", names)
+	}
+}

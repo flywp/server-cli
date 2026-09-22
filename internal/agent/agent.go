@@ -32,6 +32,9 @@ type agent struct {
 	// since the last report.
 	interval int
 	pending  int
+
+	// last is the time of the last tick.
+	last time.Time
 }
 
 // Run runs the agent until ctx is done. Only one agent can run with the same
@@ -42,6 +45,9 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 		return err
 	}
 	defer unlock()
+
+	// A crash during a write can leave a temporary file.
+	statefile.RemoveTemp(cfg.StateDir)
 
 	a := &agent{cfg: cfg, log: log, interval: loadInterval(cfg.StateDir, log)}
 	log.Info("agent started", "version", version.Version, "offset", cfg.Offset(), "report_interval", a.interval)
@@ -54,15 +60,30 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 // loop calls tick at the offset second of each minute until ctx is done.
 func (a *agent) loop(ctx context.Context) {
 	for {
-		timer := time.NewTimer(time.Until(nextTick(time.Now(), a.cfg.Offset())))
+		next := nextAfter(time.Now(), a.last, a.cfg.Offset())
+		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
-		case now := <-timer.C:
-			a.tick(ctx, now)
+		case <-timer.C:
+			a.last = next
+			a.tick(ctx, next)
 		}
 	}
+}
+
+// nextAfter returns the next tick after now, and never a tick at or before
+// last. The timer runs on the monotonic clock, but the tick times come from
+// the wall clock: when the wall clock steps back, the timer fires before the
+// tick time, and without last the same tick would run two times.
+func nextAfter(now, last time.Time, offset time.Duration) time.Time {
+	next := nextTick(now, offset)
+	if !last.IsZero() && !next.After(last) {
+		next = nextTick(last, offset)
+	}
+
+	return next
 }
 
 // tick does the work of one minute: it takes a sample and, after each

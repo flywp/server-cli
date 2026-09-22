@@ -20,6 +20,10 @@ const requestTimeout = 20 * time.Second
 // maxReplySize limits the reply body that the agent reads.
 const maxReplySize = 1 << 20
 
+// maxRetryAfter limits the wait that a Retry-After header can ask for, so
+// that one bad reply cannot stop the sends for a long time.
+const maxRetryAfter = time.Hour
+
 // Client sends requests to the control plane.
 type Client struct {
 	base  *url.URL
@@ -28,13 +32,24 @@ type Client struct {
 }
 
 // NewClient returns a client for the control plane of cfg. A nil hc uses a
-// client with the default timeout.
+// client with the default timeout. The client never follows a redirect: see
+// noRedirects.
 func NewClient(cfg Config, hc *http.Client) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: requestTimeout}
 	}
+	c := *hc
+	c.CheckRedirect = noRedirects
 
-	return &Client{base: cfg.URL, token: cfg.Token, http: hc}
+	return &Client{base: cfg.URL, token: cfg.Token, http: &c}
+}
+
+// noRedirects makes a redirect a reply like any other status that is not 200.
+// A followed redirect replays a POST as a GET without the body, so a 200 to
+// that GET would drop samples that were never stored. It can also send the
+// token over plain http.
+func noRedirects(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // StatusError is a reply from the control plane that is not 200 OK.
@@ -93,15 +108,19 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 }
 
 // retryAfter reads a Retry-After value: a number of seconds or an HTTP date.
+// The wait is at most maxRetryAfter.
 func retryAfter(v string, now time.Time) time.Duration {
 	if v == "" {
 		return 0
 	}
-	if s, err := strconv.Atoi(v); err == nil {
-		return max(time.Duration(s)*time.Second, 0)
+	if s, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if s <= 0 {
+			return 0
+		}
+		return time.Duration(min(s, int64(maxRetryAfter/time.Second))) * time.Second
 	}
 	if t, err := http.ParseTime(v); err == nil {
-		return max(t.Sub(now), 0)
+		return min(max(t.Sub(now), 0), maxRetryAfter)
 	}
 
 	return 0
