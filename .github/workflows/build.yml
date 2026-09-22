@@ -18,8 +18,15 @@ jobs:
       with:
         fetch-depth: 0  # the tag check needs main, and git describe needs the tags
 
-    - name: Check that the tag is on main
+    - name: Check that a release tag is on main
       run: |
+        # A pre-release tag (for example v0.2.0-dev.1a2b3c4 from make
+        # dev-release) can come from any branch: /releases/latest never
+        # returns a pre-release, so installed CLIs do not update to it.
+        if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+          echo "Pre-release tag $GITHUB_REF_NAME: any branch is allowed."
+          exit 0
+        fi
         git fetch --no-tags origin main
         if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
           echo "::error::Tag $GITHUB_REF_NAME is not on main. Release tags must be on the release branch."
