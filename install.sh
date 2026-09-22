@@ -1,4 +1,14 @@
 #!/bin/bash
+#
+# Install the latest release of fly. Run it as root:
+#   curl -sL https://raw.githubusercontent.com/flywp/server-cli/main/install.sh | sudo bash
+
+set -euo pipefail
+
+REPO="flywp/server-cli"
+TARGET="/usr/local/bin/fly"
+AGENT_UNIT="/etc/systemd/system/fly-agent.service"
+TEMP_DIR=""
 
 error_exit() {
     echo -e "\033[31mERROR: $1\033[0m" >&2
@@ -13,138 +23,74 @@ info_msg() {
     echo -e "\033[34m$1\033[0m"
 }
 
-warning_msg() {
-    echo -e "\033[33m$1\033[0m"
+cleanup() {
+    if [ -n "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+    fi
 }
+trap cleanup EXIT
 
-# Check if script is running with sudo privileges
 check_sudo() {
     if [ "$(id -u)" -ne 0 ]; then
         error_exit "This script requires sudo privileges. Please run with sudo."
     fi
 }
 
-# Check for required commands and install if missing
-check_dependencies() {
-    
-    # Check for Perl regex support
-    if ! echo "test" | grep -P "test" &> /dev/null; then
-        warning_msg "Perl regex support not detected. Installing..."
-        
-        # Install perl-compatible grep for Ubuntu
-        apt-get install -y -qq grep
-        
-        # Check again after installation
-        if ! echo "test" | grep -P "test" &> /dev/null; then
-            warning_msg "Perl regex support still not available. Using alternative parsing method."
-            USE_PERL_REGEX=false
-        else
-            USE_PERL_REGEX=true
-        fi
-    else
-        USE_PERL_REGEX=true
-    fi
-}
-
 # Determine OS and architecture
 determine_platform() {
     info_msg "Detecting system platform..."
-    
-    # Check if running on Ubuntu
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        if [[ "$ID" != "ubuntu" ]]; then
-            error_exit "This script only supports Ubuntu. Detected OS: $ID"
-        fi
-        info_msg "Detected Ubuntu version: $VERSION_ID"
-    else
+
+    if [ ! -f /etc/os-release ]; then
         error_exit "Cannot detect OS. This script only supports Ubuntu."
     fi
-    
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    ARCH=$(uname -m)
-    
-    info_msg "Detected architecture: $ARCH"
-    
-    if [ "$ARCH" == "x86_64" ]; then
-        ARCH="amd64"
-    elif [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
-        ARCH="arm64"
-    else
-        error_exit "Unsupported architecture: $ARCH. Only amd64 and arm64 are supported."
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    if [ "${ID:-}" != "ubuntu" ]; then
+        error_exit "This script only supports Ubuntu. Detected OS: ${ID:-unknown}"
     fi
-    
+    info_msg "Detected Ubuntu version: ${VERSION_ID:-unknown}"
+
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    case "$(uname -m)" in
+        x86_64) ARCH="amd64" ;;
+        aarch64 | arm64) ARCH="arm64" ;;
+        *) error_exit "Unsupported architecture: $(uname -m). Only amd64 and arm64 are supported." ;;
+    esac
+
+    NAME="fly-${OS}-${ARCH}"
     info_msg "Using OS: $OS, Architecture: $ARCH"
 }
 
-# Get latest release from GitHub API
+# Get the tag of the latest release from the GitHub API
 get_release_info() {
     info_msg "Fetching latest release information from GitHub..."
-    
-    # Use a temporary file for the API response
-    GITHUB_API_RESPONSE=$(mktemp)
-    
-    # Add a user-agent to avoid rate limiting
-    if ! curl -s -L -H "User-Agent: FlyWP-Installer" \
-        https://api.github.com/repos/flywp/server-cli/releases/latest \
-        -o "$GITHUB_API_RESPONSE"; then
-        error_exit "Failed to access GitHub API. Please check your internet connection."
-    fi
-    
-    # Check for rate limiting
-    if grep -q "API rate limit exceeded" "$GITHUB_API_RESPONSE"; then
-        error_exit "GitHub API rate limit exceeded. Please try again later or use a GitHub token."
-    fi
-    
-    # Extract tag name with more robust methods
-    if [ "$USE_PERL_REGEX" = true ]; then
-        TAG_NAME=$(grep -oP '"tag_name":\s*"\K[^"]+' "$GITHUB_API_RESPONSE")
-    else
-        TAG_NAME=$(grep '"tag_name"' "$GITHUB_API_RESPONSE" | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/')
-    fi
-    
-    if [ -z "$TAG_NAME" ]; then
-        # Fallback to a more basic approach
-        TAG_NAME=$(grep "tag_name" "$GITHUB_API_RESPONSE" | cut -d'"' -f4)
-    fi
-    
+
+    local response="$TEMP_DIR/release.json"
+    local status
+    status=$(curl -sSL -H "User-Agent: FlyWP-Installer" -o "$response" -w '%{http_code}' \
+        "https://api.github.com/repos/${REPO}/releases/latest") ||
+        error_exit "Failed to access the GitHub API. Please check your internet connection."
+
+    case "$status" in
+        200) ;;
+        403 | 429) error_exit "GitHub API rate limit exceeded. Please try again later." ;;
+        *) error_exit "The GitHub API answered with HTTP $status." ;;
+    esac
+
+    # The API answers with one key on each line.
+    TAG_NAME=$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$response" | head -n 1)
     if [ -z "$TAG_NAME" ]; then
         error_exit "Failed to determine the latest release version."
     fi
-    
+
+    DOWNLOAD_BASE="https://github.com/${REPO}/releases/download/${TAG_NAME}"
     info_msg "Latest release version: $TAG_NAME"
-    
-    # Since we know the exact format of the release assets, construct the URL directly
-    DOWNLOAD_URL="https://github.com/flywp/server-cli/releases/download/${TAG_NAME}/fly-linux-${ARCH}.tar.gz"
-    
-    # Clean up
-    rm -f "$GITHUB_API_RESPONSE"
-    
-    info_msg "Download URL: $DOWNLOAD_URL"
 }
 
-# Download and verify the release
 download_release() {
-    info_msg "Creating temporary directory..."
-    TEMP_DIR=$(mktemp -d)
-    if [ ! -d "$TEMP_DIR" ]; then
-        error_exit "Failed to create temporary directory."
-    fi
-    
-    DOWNLOAD_FILE="$TEMP_DIR/fly-$OS-$ARCH.tar.gz"
-    
-    info_msg "Downloading latest release..."
-    if ! curl -s -L -o "$DOWNLOAD_FILE" "$DOWNLOAD_URL"; then
-        rm -rf "$TEMP_DIR"
-        error_exit "Failed to download the release file."
-    fi
-    
-    # Verify the downloaded file
-    if [ ! -s "$DOWNLOAD_FILE" ]; then
-        rm -rf "$TEMP_DIR"
-        error_exit "Downloaded file is empty or corrupted."
-    fi
-    
+    info_msg "Downloading ${NAME}.tar.gz..."
+    curl -fsSL -o "$TEMP_DIR/${NAME}.tar.gz" "${DOWNLOAD_BASE}/${NAME}.tar.gz" ||
+        error_exit "Failed to download ${DOWNLOAD_BASE}/${NAME}.tar.gz."
     info_msg "Download completed successfully."
 }
 
@@ -153,94 +99,59 @@ download_release() {
 verify_download() {
     info_msg "Verifying the download with checksums.txt..."
 
-    CHECKSUMS_URL="https://github.com/flywp/server-cli/releases/download/${TAG_NAME}/checksums.txt"
-    if ! curl -fsSL -o "$TEMP_DIR/checksums.txt" "$CHECKSUMS_URL"; then
-        rm -rf "$TEMP_DIR"
+    curl -fsSL -o "$TEMP_DIR/checksums.txt" "${DOWNLOAD_BASE}/checksums.txt" ||
         error_exit "Failed to download checksums.txt of ${TAG_NAME}. The download cannot be checked, so it is not installed."
-    fi
 
-    if ! (cd "$TEMP_DIR" && grep " fly-${OS}-${ARCH}.tar.gz\$" checksums.txt | sha256sum -c --status -); then
-        rm -rf "$TEMP_DIR"
-        error_exit "The checksum of fly-${OS}-${ARCH}.tar.gz does not agree with checksums.txt. The download is not installed."
+    if ! (cd "$TEMP_DIR" && grep " ${NAME}.tar.gz\$" checksums.txt | sha256sum -c --status -); then
+        error_exit "The checksum of ${NAME}.tar.gz does not agree with checksums.txt. The download is not installed."
     fi
 
     info_msg "Checksum verified."
 }
 
-# Extract and install
 install_binary() {
-    info_msg "Extracting $DOWNLOAD_FILE..."
-    if ! tar -xzf "$DOWNLOAD_FILE" -C "$TEMP_DIR"; then
-        rm -rf "$TEMP_DIR"
-        error_exit "Failed to extract the archive."
+    # Extract only the binary, and do not keep the owner from the archive:
+    # a binary that root runs must not belong to a different user.
+    tar --no-same-owner -xzf "$TEMP_DIR/${NAME}.tar.gz" -C "$TEMP_DIR" "$NAME" ||
+        error_exit "The archive does not contain ${NAME}."
+
+    # On a server with the monitoring agent, /usr/local/bin/fly is a link to
+    # the binary of the agent (~fly/.fly/bin/fly). Install through the link and
+    # keep the owner of the binary, so that the CLI and the agent use one binary.
+    local dest="$TARGET" owner="0:0"
+    if [ -L "$TARGET" ]; then
+        dest=$(readlink -f "$TARGET")
+        owner=$(stat -c '%u:%g' "$dest" 2>/dev/null || echo "0:0")
     fi
-    
-    # Look for the binary file
-    BINARY_FILE=$(find "$TEMP_DIR" -type f -executable | head -n 1)
-    
-    if [ -z "$BINARY_FILE" ]; then
-        # Fallback to expected name pattern
-        BINARY_FILE="$TEMP_DIR/fly-$OS-$ARCH"
-        
-        if [ ! -f "$BINARY_FILE" ]; then
-            # Try finding any file that might be the binary
-            BINARY_FILE=$(find "$TEMP_DIR" -type f -name "fly*" | head -n 1)
-        fi
-        
-        if [ -z "$BINARY_FILE" ]; then
-            rm -rf "$TEMP_DIR"
-            error_exit "Could not find the executable in the extracted archive."
-        fi
+
+    info_msg "Installing to ${dest}..."
+    install -m 0755 -o "${owner%%:*}" -g "${owner##*:}" "$TEMP_DIR/$NAME" "${dest}.new" ||
+        error_exit "Failed to install the binary to ${dest}. Check your permissions."
+    # A rename is atomic: a running fly never sees a partial binary.
+    mv -f "${dest}.new" "$dest"
+
+    if [ -f "$AGENT_UNIT" ]; then
+        info_msg "Restarting the monitoring agent..."
+        systemctl restart fly-agent || error_exit "fly is installed, but the monitoring agent did not restart."
     fi
-    
-    info_msg "Installing to /usr/local/bin/fly..."
-    
-    if ! mv "$BINARY_FILE" /usr/local/bin/fly; then
-        rm -rf "$TEMP_DIR"
-        error_exit "Failed to move the binary to /usr/local/bin/fly. Check your permissions."
-    fi
-    
-    if ! chmod +x /usr/local/bin/fly; then
-        rm -rf "$TEMP_DIR"
-        error_exit "Failed to make the binary executable."
-    fi
-    
-    # Clean up
-    rm -rf "$TEMP_DIR"
-    
-    # Verify installation
-    if ! command -v fly &> /dev/null; then
-        error_exit "Installation failed: 'fly' command not found in PATH."
-    fi
-    
-    success_msg "Installation completed successfully!"
+
+    command -v fly >/dev/null || error_exit "Installation failed: 'fly' command not found in PATH."
+
+    success_msg "Installation of fly ${TAG_NAME} completed successfully!"
     info_msg "Verify with 'fly version'"
 }
 
 main() {
     echo "===== FlyWP Server CLI Installer ====="
-    
-    # Check for sudo access
-    check_sudo
-    
-    # Determine OS and architecture (and check for Ubuntu)
-    determine_platform
-    
-    # Check for Perl regex support (only essential dependency check)
-    check_dependencies
-    
-    # Get release information
-    get_release_info
-    
-    # Download the release
-    download_release
 
-    # Examine the download
+    check_sudo
+    determine_platform
+
+    TEMP_DIR=$(mktemp -d)
+    get_release_info
+    download_release
     verify_download
-    
-    # Install the binary
     install_binary
 }
 
-# Run the main function
 main
