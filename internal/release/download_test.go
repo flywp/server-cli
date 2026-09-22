@@ -185,6 +185,12 @@ func TestSelfUpdateChecksTheArchive(t *testing.T) {
 		{"checksum does not agree", other + "  fly-linux-amd64.tar.gz\n", "the sha256 of"},
 		{"no line for the archive", other + "  fly-linux-arm64.tar.gz\n", "has no line for fly-linux-amd64.tar.gz"},
 		{"no checksum file", "", "has no checksums.txt"},
+		{"CRLF line ends", sum(data) + "  fly-linux-amd64.tar.gz\r\n", ""},
+		{"upper case hex", strings.ToUpper(sum(data)) + "  fly-linux-amd64.tar.gz\n", ""},
+		{"the same line two times", sum(data) + "  fly-linux-amd64.tar.gz\n" + sum(data) + "  fly-linux-amd64.tar.gz\n", ""},
+		{"two different sums", sum(data) + "  fly-linux-amd64.tar.gz\n" + other + "  fly-linux-amd64.tar.gz\n", "two different sums"},
+		{"a similar name", sum(data) + "  fly-linux-amd64.tar.gz.sig\n", "has no line for fly-linux-amd64.tar.gz"},
+		{"empty checksum file", "\n", "has no line for fly-linux-amd64.tar.gz"},
 	}
 
 	for _, tt := range tests {
@@ -201,6 +207,9 @@ func TestSelfUpdateChecksTheArchive(t *testing.T) {
 			if tt.want == "" {
 				if err != nil || string(got) != "new" {
 					t.Fatalf("selfUpdate() = %v, binary %q; want the new binary", err, got)
+				}
+				if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+					t.Errorf("the directory holds %d files after the update, want only the binary", len(entries))
 				}
 				return
 			}

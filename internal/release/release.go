@@ -195,15 +195,25 @@ func checksum(ctx context.Context, release *GithubRelease, name string) (string,
 		return "", fmt.Errorf("downloading %s: %w", ChecksumsAsset, err)
 	}
 
+	// install.sh reads the file with the same rules. Two different sums for
+	// one file make the file not valid: it is not clear which one is correct.
+	var sum string
 	for line := range strings.Lines(string(data)) {
 		// sha256sum marks a file that it read in binary mode with "*".
 		fields := strings.Fields(line)
-		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
-			return fields[0], nil
+		if len(fields) != 2 || strings.TrimPrefix(fields[1], "*") != name {
+			continue
 		}
+		if sum != "" && !strings.EqualFold(sum, fields[0]) {
+			return "", fmt.Errorf("%s of release %s has two different sums for %s", ChecksumsAsset, release.TagName, name)
+		}
+		sum = fields[0]
+	}
+	if sum == "" {
+		return "", fmt.Errorf("%s of release %s has no line for %s", ChecksumsAsset, release.TagName, name)
 	}
 
-	return "", fmt.Errorf("%s of release %s has no line for %s", ChecksumsAsset, release.TagName, name)
+	return sum, nil
 }
 
 // BinaryName is the name of the binary in a release archive. Releases must
