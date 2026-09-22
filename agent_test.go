@@ -5,6 +5,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
@@ -87,6 +90,37 @@ func startAgent(t *testing.T, environ []string) (*exec.Cmd, *lockedBuffer) {
 	}
 
 	return cmd, stderr
+}
+
+func TestAgentSendsAgentStartedToTheControlPlane(t *testing.T) {
+	type request struct {
+		path, auth string
+		body       map[string][]map[string]any
+	}
+	got := make(chan request, 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := request{path: r.URL.Path, auth: r.Header.Get("Authorization")}
+		_ = json.NewDecoder(r.Body).Decode(&req.body)
+		got <- req
+		_, _ = w.Write([]byte(`{"accepted": 1}`))
+	}))
+	defer srv.Close()
+
+	environ := append(agentEnv(t), "FLY_AGENT_URL="+srv.URL)
+	cmd, stderr := startAgent(t, environ)
+	defer func() { _ = cmd.Process.Signal(syscall.SIGTERM); _ = cmd.Wait() }()
+
+	select {
+	case req := <-got:
+		if req.path != "/agent/v1/events" || req.auth != "Bearer "+testToken {
+			t.Errorf("request to %s with Authorization %q, want /agent/v1/events with the token", req.path, req.auth)
+		}
+		if events := req.body["events"]; len(events) != 1 || events[0]["name"] != "agent.started" {
+			t.Errorf("events = %v, want agent.started", events)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the control plane got no request within 10s. stderr:\n%s", stderr)
+	}
 }
 
 func TestAgentConfigErrors(t *testing.T) {

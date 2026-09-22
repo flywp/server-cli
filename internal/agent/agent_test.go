@@ -95,7 +95,7 @@ func TestLoopTicksAtTheOffsetAndReportsEachInterval(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error)
 		go func() {
-			done <- Run(ctx, Config{ServerID: 17, StateDir: dir}, slog.New(rec))
+			done <- run(ctx, Config{ServerID: 17, StateDir: dir}, slog.New(rec), &fakeCP{}, nil)
 		}()
 
 		// The bubble starts at 2000-01-01 00:00:00 UTC. Let 4 minutes pass.
@@ -134,7 +134,7 @@ func TestRunRefusesASecondAgent(t *testing.T) {
 	}
 	defer unlock()
 
-	if err := Run(context.Background(), Config{StateDir: dir}, slog.New(&recorder{})); err == nil {
+	if err := run(context.Background(), Config{StateDir: dir}, slog.New(&recorder{}), &fakeCP{}, nil); err == nil {
 		t.Fatal("Run() = nil, want an error while a different agent holds the lock")
 	}
 }
