@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -230,5 +231,33 @@ func assertOnlyFile(t *testing.T, dir, name string) {
 			names = append(names, e.Name())
 		}
 		t.Errorf("directory contains %q, want only %q", names, name)
+	}
+}
+
+func TestReplaceBinaryKeepsTheOwner(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("only root can give a file to a different user")
+	}
+
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "fly")
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The binary of the agent belongs to the server user, for example 1000.
+	if err := os.Chown(exe, 1000, 1000); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := replaceBinary(exe, archive(t, map[string]string{"fly-linux-amd64": "new"}), "fly-linux-amd64"); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := info.Sys().(*syscall.Stat_t); st.Uid != 1000 || st.Gid != 1000 {
+		t.Errorf("owner = %d:%d, want 1000:1000", st.Uid, st.Gid)
 	}
 }

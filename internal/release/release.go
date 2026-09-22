@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/flywp/server-cli/internal/version"
@@ -235,6 +236,9 @@ func writeBinary(exe string, r io.Reader) (err error) {
 	if err = tmp.Close(); err != nil {
 		return fmt.Errorf("writing new binary: %w", err)
 	}
+	if err = keepOwner(tmp.Name(), exe); err != nil {
+		return fmt.Errorf("keeping the owner of the binary: %w", err)
+	}
 	if err = os.Rename(tmp.Name(), exe); err != nil {
 		return fmt.Errorf("replacing binary: %w", err)
 	}
@@ -246,4 +250,20 @@ func writeBinary(exe string, r io.Reader) (err error) {
 	}
 
 	return nil
+}
+
+// keepOwner gives path the owner of exe. "sudo fly update" then keeps the
+// binary of the agent with the server user, not with root. Only root can give
+// a file to a different user; for other users the owner is already correct.
+func keepOwner(path, exe string) error {
+	info, err := os.Stat(exe)
+	if err != nil {
+		return nil
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || os.Geteuid() != 0 {
+		return nil
+	}
+
+	return os.Chown(path, int(st.Uid), int(st.Gid))
 }
