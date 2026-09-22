@@ -1,4 +1,6 @@
-package utils
+// Package release finds, downloads, checks and installs fly releases. "fly
+// update" and the agent command agent.update use it.
+package release
 
 import (
 	"archive/tar"
@@ -143,12 +145,12 @@ func SelfUpdate(ctx context.Context, release *GithubRelease) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	return replaceBinary(exe, resp.Body, binaryName(runtime.GOOS, runtime.GOARCH))
+	return replaceBinary(exe, resp.Body, BinaryName(runtime.GOOS, runtime.GOARCH))
 }
 
-// binaryName is the name of the binary in a release archive. Releases must
+// BinaryName is the name of the binary in a release archive. Releases must
 // keep this name: installed versions of fly look for it.
-func binaryName(goos, goarch string) string {
+func BinaryName(goos, goarch string) string {
 	return fmt.Sprintf("fly-%s-%s", goos, goarch)
 }
 
@@ -159,7 +161,7 @@ func assetURL(release *GithubRelease, goos, goarch string) string {
 		return ""
 	}
 
-	expectedName := binaryName(goos, goarch) + ".tar.gz"
+	expectedName := BinaryName(goos, goarch) + ".tar.gz"
 	for _, asset := range release.Assets {
 		if asset.Name == expectedName {
 			return asset.BrowserDownloadURL

@@ -25,6 +25,7 @@ const (
 type ControlPlane interface {
 	PostMetrics(ctx context.Context, req *wire.MetricsRequest) (*wire.MetricsReply, error)
 	PostEvents(ctx context.Context, req *wire.EventsRequest) (*wire.EventsReply, error)
+	PollCommands(ctx context.Context) (*wire.CommandsReply, error)
 }
 
 // Collector measures the server.
@@ -46,6 +47,7 @@ type agent struct {
 	cp        ControlPlane
 	collector Collector
 	outbox    *outbox
+	ledger    *ledger
 
 	// interval is the report interval, and pending is the number of samples
 	// since the last report.
@@ -59,6 +61,7 @@ type agent struct {
 	// whether the last report sent all samples.
 	eventsWait  backoff
 	metricsWait backoff
+	pollWait    backoff
 	samplesSent bool
 }
 
@@ -84,6 +87,7 @@ func run(ctx context.Context, cfg Config, log *slog.Logger, cp ControlPlane, col
 		cp:        cp,
 		collector: collector,
 		outbox:    loadOutbox(cfg.StateDir, log),
+		ledger:    loadLedger(cfg.StateDir, log),
 		interval:  loadInterval(cfg.StateDir, log),
 	}
 	log.Info("agent started", "version", version.Version, "offset", cfg.Offset(), "report_interval", a.interval)
@@ -91,26 +95,35 @@ func run(ctx context.Context, cfg Config, log *slog.Logger, cp ControlPlane, col
 	// Send the events at once, not at the next tick: after an update or a
 	// restart, they hold the result of the command.
 	a.addEvent(wire.EventAgentStarted, "", &wire.EventData{Version: version.Version})
+	a.resolve()
 	a.send(ctx, false)
 
-	a.loop(ctx)
+	if a.loop(ctx) {
+		// systemd starts the agent again (Restart=always), with the new
+		// binary after an update.
+		log.Info("agent exits for a command")
+		return nil
+	}
 	log.Info("agent stopped")
 
 	return nil
 }
 
-// loop calls tick at the offset second of each minute until ctx is done.
-func (a *agent) loop(ctx context.Context) {
+// loop calls tick at the offset second of each minute until ctx is done. It
+// returns true when a command ends the process.
+func (a *agent) loop(ctx context.Context) (exit bool) {
 	for {
 		next := nextAfter(time.Now(), a.last, a.cfg.Offset())
 		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return
+			return false
 		case <-timer.C:
 			a.last = next
-			a.tick(ctx, next)
+			if a.tick(ctx, next) {
+				return true
+			}
 		}
 	}
 }
@@ -129,8 +142,9 @@ func nextAfter(now, last time.Time, offset time.Duration) time.Time {
 }
 
 // tick does the work of one minute: it takes a sample and, after each
-// interval samples, sends a report.
-func (a *agent) tick(ctx context.Context, now time.Time) {
+// interval samples, sends a report and runs the new commands. It returns true
+// when a command ends the process.
+func (a *agent) tick(ctx context.Context, now time.Time) (exit bool) {
 	a.log.Debug("tick", "at", now)
 
 	if a.collector != nil {
@@ -145,17 +159,32 @@ func (a *agent) tick(ctx context.Context, now time.Time) {
 
 	a.pending++
 	if a.pending < a.interval {
-		return
+		return false
 	}
 
 	a.log.Debug("report")
-	a.send(ctx, true)
+	eventsSent := a.send(ctx, true)
 
 	// Samples that could not go are tried again at the next tick, when their
 	// wait allows it, not only after the next full interval.
 	if a.samplesSent {
 		a.pending = 0
 	}
+
+	// Poll only when no event waits: the results of the commands that ran
+	// must reach the control plane first, so that it does not send them again.
+	if !eventsSent {
+		return false
+	}
+	if a.commands(ctx) {
+		return true
+	}
+
+	// Send the results of the commands now, not at the next report.
+	if len(a.outbox.events) > 0 {
+		a.send(ctx, false)
+	}
+	return false
 }
 
 // addEvent puts an event in the queue. Its ID is made now, so that each resend
