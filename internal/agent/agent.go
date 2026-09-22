@@ -5,10 +5,12 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/flywp/server-cli/internal/agent/wire"
+	"github.com/flywp/server-cli/internal/release"
 	"github.com/flywp/server-cli/internal/statefile"
 	"github.com/flywp/server-cli/internal/version"
 	"github.com/oklog/ulid/v2"
@@ -68,6 +70,11 @@ type agent struct {
 // Run runs the agent until ctx is done. Only one agent can run with the same
 // state directory. A nil collector takes no samples.
 func Run(ctx context.Context, cfg Config, log *slog.Logger, collector Collector) error {
+	// A crash during an update can leave a download next to the binary.
+	if exe, err := os.Executable(); err == nil {
+		release.RemoveTemp(filepath.Dir(exe))
+	}
+
 	return run(ctx, cfg, log, NewClient(cfg, nil), collector)
 }
 

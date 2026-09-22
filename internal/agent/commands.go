@@ -178,7 +178,9 @@ func (a *agent) update(ctx context.Context, c wire.Command, log *slog.Logger) (e
 		return false
 	}
 
-	if versionMatches(args.Version, version.Version) {
+	// Only the same version skips the download. An older target is a
+	// rollback: the control plane decides which version a server runs.
+	if args.Version == version.Version {
 		log.Info("the agent already runs this version", "version", version.Version)
 		a.addEvent(wire.EventCommandCompleted, c.ID, &wire.EventData{Version: version.Version})
 		a.record(c, args.Version)
@@ -245,9 +247,10 @@ var updateBinary = func(ctx context.Context, args wire.UpdateArgs) error {
 	return release.Install(archive, exe, release.BinaryName(runtime.GOOS, runtime.GOARCH))
 }
 
-// versionMatches reports whether an agent that runs the version running
-// satisfies an update to target: the same tag, or a newer release. A dev tag
-// (v0.2.0-dev.1a2b3c4) has no order, so it matches only the same tag.
+// versionMatches reports whether the new process, which runs the version
+// running, completes an update to target: the same tag, or a newer release
+// (for example when fly update installed a newer release at the same time).
+// A dev tag (v0.2.0-dev.1a2b3c4) has no order, so it matches only the same tag.
 func versionMatches(target, running string) bool {
 	if running == target {
 		return true

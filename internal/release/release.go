@@ -219,14 +219,30 @@ func writeBinary(exe string, r io.Reader) (err error) {
 		_ = tmp.Close()
 		return fmt.Errorf("writing new binary: %w", err)
 	}
+	// Change the open file, never the path: the directory can belong to an
+	// other user (the agent's ~fly/.fly/bin), who could put a link to a
+	// different file in place of the temporary file.
+	if err = tmp.Chmod(0o755); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("making binary executable: %w", err)
+	}
+	// Put the binary on the disk before the rename: after a power loss, a
+	// renamed but empty binary would not start.
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing new binary: %w", err)
+	}
 	if err = tmp.Close(); err != nil {
 		return fmt.Errorf("writing new binary: %w", err)
 	}
-	if err = os.Chmod(tmp.Name(), 0o755); err != nil {
-		return fmt.Errorf("making binary executable: %w", err)
-	}
 	if err = os.Rename(tmp.Name(), exe); err != nil {
 		return fmt.Errorf("replacing binary: %w", err)
+	}
+
+	// Sync the directory too, so that the rename survives a power loss.
+	if d, err := os.Open(filepath.Dir(exe)); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 
 	return nil

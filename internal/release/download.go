@@ -10,15 +10,42 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // maxArchiveSize limits the size of a downloaded release archive.
 const maxArchiveSize = 200 << 20
 
 // downloadClient has no timeout of its own: the context of the caller limits
-// the download, because a slow network can need some minutes.
-var downloadClient = &http.Client{}
+// the download, because a slow network can need some minutes. It follows a
+// redirect (GitHub sends each download to its file host) only to https.
+var downloadClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return checkURL(req.URL.String())
+	},
+}
+
+// tempMaxAge is the age after which RemoveTemp removes a temporary file. A
+// younger file can belong to an update that still runs.
+const tempMaxAge = time.Hour
+
+// RemoveTemp removes the temporary files that an update left in dir after a
+// crash, if they are older than one hour.
+func RemoveTemp(dir string) {
+	for _, pattern := range []string{".fly-download-*", ".fly-update-*"} {
+		matches, _ := filepath.Glob(filepath.Join(dir, pattern))
+		for _, m := range matches {
+			if info, err := os.Lstat(m); err == nil && info.Mode().IsRegular() && time.Since(info.ModTime()) > tempMaxAge {
+				_ = os.Remove(m)
+			}
+		}
+	}
+}
 
 // Download fetches the release archive at rawURL into a temporary file in dir,
 // and checks that its sha256 is wantSHA256 (hex). It returns the path of the

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func sum(data []byte) string {
@@ -92,5 +93,55 @@ func TestDownloadLimitsTheSize(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Errorf("Download() left %d files in the directory", len(entries))
+	}
+}
+
+func TestDownloadRefusesARedirectToPlainHTTP(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the download followed a redirect to plain http")
+	}))
+	defer plain.Close()
+	// A plain-http host that is not loopback, reached through a redirect.
+	remote := strings.Replace(plain.URL, "127.0.0.1", "localtest.invalid", 1)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, remote+"/fly.tar.gz", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	old := downloadClient.Transport
+	downloadClient.Transport = srv.Client().Transport
+	t.Cleanup(func() { downloadClient.Transport = old })
+
+	_, err := Download(context.Background(), srv.URL+"/fly.tar.gz", sum([]byte("x")), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "must be https") {
+		t.Fatalf("Download() error = %v, want a refusal of the http redirect", err)
+	}
+}
+
+func TestRemoveTempKeepsYoungFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{".fly-download-1", ".fly-update-2", ".fly-download-new", "fly"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	for _, name := range []string{".fly-download-1", ".fly-update-2"} {
+		if err := os.Chtimes(filepath.Join(dir, name), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	RemoveTemp(dir)
+
+	var names []string
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	// A young file can belong to an update that still runs.
+	if strings.Join(names, ",") != ".fly-download-new,fly" {
+		t.Errorf("directory holds %v, want the young download and the binary only", names)
 	}
 }
