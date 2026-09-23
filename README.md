@@ -107,6 +107,14 @@ All arguments after the WP-CLI command (or after the command for `fly exec`) go 
 
 It reads `FLY_AGENT_URL` (https), `FLY_AGENT_TOKEN` and `FLY_AGENT_SERVER_ID` from `/etc/fly/agent.env`, and keeps its state in `STATE_DIRECTORY` (`/var/lib/fly-agent`).
 
+The agent also updates itself. Once a day, at a time set by the server id, it checks the latest release on GitHub. It installs the release only when:
+
+- the release is newer than the running version (the agent never downgrades)
+- the release has a valid signature from the FlyWP release key (see [Releasing](#releasing))
+- the signature is more than 24 hours old
+
+To turn this off on one server, add `FLY_AGENT_AUTO_UPDATE=off` to `/etc/fly/agent.env` and restart the agent. Updates that FlyWP sends still work.
+
 ```bash
 systemctl status fly-agent    # is the agent running?
 journalctl -u fly-agent -f    # the agent log
@@ -153,6 +161,16 @@ git push origin v0.2.0
 The Release workflow checks that the tag is on `main`, runs `make check`, builds the archives with `make release`, and creates the GitHub release with both archives and `checksums.txt`. A tag with a pre-release suffix, such as `v0.2.0-rc.1`, becomes a pre-release, so installed CLIs do not update to it.
 
 `install.sh` and `fly update` install only a release that has `checksums.txt`. Releases before v0.2.0 have none, so push the tag right after the merge into `main`: until the release is published, `install.sh` from `main` stops.
+
+After the workflow publishes the release, sign it on your own computer:
+
+```bash
+make sign-release VERSION=v0.2.0 KEY=<private key file>    # KEY=- reads the key from stdin
+```
+
+This signs `checksums.txt`, checks the signature with the key that the code trusts, and uploads `checksums.txt.sig`. Agents install a release by themselves only when it has a valid signature, and only 24 hours after it was signed. Each server then installs it at its own time of day. To stop a bad release in those 24 hours, mark it as a pre-release on GitHub.
+
+The signing key is kept outside GitHub, so that a push to GitHub alone cannot reach every server. `make release-key KEY=<file>` makes a key and prints its public key line for `internal/release/keys.go`. Keep the private key in a password manager, with a backup. Never commit it, and never put it in a GitHub secret. If the key is lost or leaked, ship a binary with a new key through a FlyWP update: that path does not use the signature.
 
 ### Dev pre-releases
 

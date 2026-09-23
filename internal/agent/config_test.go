@@ -145,3 +145,43 @@ func TestConfigURLWithPasswordDoesNotShowIt(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigAutoUpdate(t *testing.T) {
+	tests := []struct {
+		value       string
+		want        bool
+		wantWarning bool
+	}{
+		{"", true, false},
+		{"on", true, false},
+		{"TRUE", true, false},
+		{"1", true, false},
+		{"yes", true, false},
+		{"off", false, false},
+		{" Off ", false, false},
+		{"false", false, false},
+		{"0", false, false},
+		{"no", false, false},
+		// A typo in an optional key must not stop the metrics.
+		{"of", true, true},
+		{"disabled", true, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			env := validEnv(t)
+			env[EnvAutoUpdate] = tt.value
+
+			cfg, err := ConfigFromEnv(getenv(env))
+			if err != nil {
+				t.Fatalf("ConfigFromEnv() error = %v, want the agent to start", err)
+			}
+			if cfg.AutoUpdate != tt.want {
+				t.Errorf("AutoUpdate = %v, want %v", cfg.AutoUpdate, tt.want)
+			}
+			if got := len(cfg.Warnings) == 1 && strings.Contains(cfg.Warnings[0], EnvAutoUpdate); got != tt.wantWarning {
+				t.Errorf("Warnings = %q, want a warning that names %s: %v", cfg.Warnings, EnvAutoUpdate, tt.wantWarning)
+			}
+		})
+	}
+}

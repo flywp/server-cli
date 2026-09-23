@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -41,6 +42,8 @@ type Collector interface {
 // state is the part of the agent state that is not a queue.
 type state struct {
 	ReportInterval int `json:"report_interval"`
+	// LastUpdateCheck is the time of the last check for a new release.
+	LastUpdateCheck time.Time `json:"last_update_check,omitzero"`
 }
 
 type agent struct {
@@ -58,6 +61,14 @@ type agent struct {
 
 	// last is the time of the last tick.
 	last time.Time
+
+	// autoUpdate is true when the agent checks for a new release each day,
+	// with keys. lastUpdateCheck is the time of the last check, and
+	// nextUpdateCheck the time of the next one.
+	autoUpdate      bool
+	keys            map[string]ed25519.PublicKey
+	lastUpdateCheck time.Time
+	nextUpdateCheck time.Time
 
 	// The waits of the events and the metrics requests after a failure, and
 	// whether the last report sent all samples.
@@ -88,16 +99,22 @@ func run(ctx context.Context, cfg Config, log *slog.Logger, cp ControlPlane, col
 	// A crash during a write can leave a temporary file.
 	statefile.RemoveTemp(cfg.StateDir)
 
+	saved := loadState(cfg.StateDir, log)
 	a := &agent{
-		cfg:       cfg,
-		log:       log,
-		cp:        cp,
-		collector: collector,
-		outbox:    loadOutbox(cfg.StateDir, log),
-		ledger:    loadLedger(cfg.StateDir, log),
-		interval:  loadInterval(cfg.StateDir, log),
+		cfg:             cfg,
+		log:             log,
+		cp:              cp,
+		collector:       collector,
+		outbox:          loadOutbox(cfg.StateDir, log),
+		ledger:          loadLedger(cfg.StateDir, log),
+		interval:        saved.ReportInterval,
+		lastUpdateCheck: saved.LastUpdateCheck,
 	}
 	log.Info("agent started", "version", version.Version, "offset", cfg.Offset(), "report_interval", a.interval)
+	for _, w := range cfg.Warnings {
+		log.Warn(w)
+	}
+	a.startAutoUpdate(time.Now())
 
 	// Send the events at once, not at the next tick: after an update or a
 	// restart, they hold the result of the command.
@@ -108,7 +125,7 @@ func run(ctx context.Context, cfg Config, log *slog.Logger, cp ControlPlane, col
 	if a.loop(ctx) {
 		// systemd starts the agent again (Restart=always), with the new
 		// binary after an update.
-		log.Info("agent exits for a command")
+		log.Info("agent exits; systemd starts it again")
 		return nil
 	}
 	log.Info("agent stopped")
@@ -149,8 +166,9 @@ func nextAfter(now, last time.Time, offset time.Duration) time.Time {
 }
 
 // tick does the work of one minute: it takes a sample and, after each
-// interval samples, sends a report and runs the new commands. It returns true
-// when a command ends the process.
+// interval samples, sends a report and runs the new commands. One time each
+// day it checks for a new release. It returns true when a command or an
+// update ends the process.
 func (a *agent) tick(ctx context.Context, now time.Time) (exit bool) {
 	a.log.Debug("tick", "at", now)
 
@@ -164,6 +182,21 @@ func (a *agent) tick(ctx context.Context, now time.Time) (exit bool) {
 		}
 	}
 
+	if a.report(ctx) {
+		return true
+	}
+
+	// On each tick, not only after a report: a long report interval or a
+	// control plane that is down must not move the check.
+	if a.autoUpdate && !now.Before(a.nextUpdateCheck) {
+		return a.checkForUpdate(ctx, now)
+	}
+	return false
+}
+
+// report sends a report after each interval samples, and runs the new
+// commands. It returns true when a command ends the process.
+func (a *agent) report(ctx context.Context) (exit bool) {
 	a.pending++
 	if a.pending < a.interval {
 		return false
@@ -214,8 +247,15 @@ func (a *agent) setInterval(n int) {
 
 	a.log.Info("report interval changed", "from", a.interval, "to", n)
 	a.interval = n
-	if err := statefile.Write(filepath.Join(a.cfg.StateDir, "state.json"), state{ReportInterval: n}); err != nil {
-		a.log.Error("saving the report interval", "error", err)
+	a.saveState()
+}
+
+// saveState writes all of the state: a write of one field must not remove
+// an other.
+func (a *agent) saveState() {
+	s := state{ReportInterval: a.interval, LastUpdateCheck: a.lastUpdateCheck}
+	if err := statefile.Write(filepath.Join(a.cfg.StateDir, "state.json"), s); err != nil {
+		a.log.Error("saving the state", "error", err)
 	}
 }
 
@@ -231,19 +271,21 @@ func nextTick(now time.Time, offset time.Duration) time.Time {
 	return t
 }
 
-// loadInterval returns the report interval of the last reply, or 1.
-func loadInterval(dir string, log *slog.Logger) int {
+// loadState returns the saved state. The report interval is the one of the
+// last reply, or 1.
+func loadState(dir string, log *slog.Logger) state {
 	var s state
 	err := statefile.Read(filepath.Join(dir, "state.json"), &s)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return minReportInterval
+		return state{ReportInterval: minReportInterval}
 	case err != nil:
 		log.Warn("ignoring the saved state", "error", err)
-		return minReportInterval
+		return state{ReportInterval: minReportInterval}
 	}
 
-	return clampInterval(s.ReportInterval)
+	s.ReportInterval = clampInterval(s.ReportInterval)
+	return s
 }
 
 func clampInterval(n int) int {
