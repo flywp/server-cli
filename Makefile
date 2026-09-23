@@ -1,7 +1,7 @@
 # Developer commands for fly. Run "make help" for the list.
 # Keep this file compatible with GNU Make 3.81, the version on macOS.
 
-.PHONY: build test vet lint vuln fmt fmt-check check release dev-version dev-release clean help
+.PHONY: build test vet lint vuln fmt fmt-check check release dev-version dev-release release-key sign-release clean help
 
 BINARY := fly
 PKG := github.com/flywp/server-cli
@@ -89,6 +89,31 @@ dev-release: ## Tag HEAD as a dev pre-release and push the tag (CI publishes it)
 	git push origin "$(DEV_VERSION)"; \
 	echo "Pushed $(DEV_VERSION). The Release workflow publishes it as a pre-release:"; \
 	echo "  https://github.com/flywp/server-cli/releases/tag/$(DEV_VERSION)"
+
+# The agent installs a release by itself only when checksums.txt has a
+# signature from a key that is kept outside GitHub. Make the key one time, put
+# the printed public key line in internal/release/keys.go, and keep the
+# private key in a password manager, with a backup. Never commit it.
+release-key: ## Make the release signing key: make release-key KEY=<file outside the repo>
+	@test -n "$(KEY)" || { echo "Usage: make release-key KEY=<file outside the repo>"; exit 1; }
+	go run ./tools/releasesign keygen -out "$(KEY)"
+
+# Run this after the Release workflow publishes VERSION. It signs the
+# checksums.txt of the release, checks the signature with the key that this
+# commit trusts, and uploads checksums.txt.sig. Agents install the release
+# 24 hours after the signature. KEY=- reads the key from stdin.
+sign-release: ## Sign a published release: make sign-release VERSION=v0.2.1 KEY=<file or ->
+	@set -e; \
+	if [ "$(origin VERSION)" != "command line" ]; then \
+		echo "Name the release: make sign-release VERSION=v0.2.1 KEY=<file or ->"; exit 1; fi; \
+	case "$(VERSION)" in v*.*.*) ;; *) echo "Usage: make sign-release VERSION=v0.2.1 KEY=<file or ->"; exit 1;; esac; \
+	test -n "$(KEY)" || { echo "Usage: make sign-release VERSION=v0.2.1 KEY=<file or ->"; exit 1; }; \
+	dir=build/sign/$(VERSION); rm -rf "$$dir"; mkdir -p "$$dir"; \
+	gh release download "$(VERSION)" --pattern checksums.txt --dir "$$dir"; \
+	go run ./tools/releasesign sign -key "$(KEY)" -tag "$(VERSION)" "$$dir/checksums.txt" > "$$dir/checksums.txt.sig"; \
+	go run ./tools/releasesign verify -tag "$(VERSION)" "$$dir/checksums.txt" "$$dir/checksums.txt.sig"; \
+	gh release upload "$(VERSION)" "$$dir/checksums.txt.sig" --clobber; \
+	echo "Signed $(VERSION). Agents install it 24 hours after the signature."
 
 clean: ## Remove bin/ and build/
 	rm -rf bin/ build/
