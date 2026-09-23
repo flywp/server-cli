@@ -10,7 +10,7 @@ import "crypto/ed25519"
 //
 // It is a string, not a map, so that a test build can set it with
 // -ldflags "-X github.com/flywp/server-cli/internal/release.trustedKeys=...".
-var trustedKeys = ""
+var trustedKeys = "21ec14c790e96d62:pyMN2C1s+lG2xXUTYeoXCgYtE1rtCh3rgYlYsBRySGk=" // server-cli release key for flywp
 
 // TrustedKeys returns the public keys that the agent accepts for a release
 // signature. An empty map means that no release can install by itself.

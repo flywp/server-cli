@@ -168,9 +168,14 @@ func TestParseKeys(t *testing.T) {
 
 func TestTrustedKeysParse(t *testing.T) {
 	// The built-in list must always parse: a bad list would stop every
-	// update by itself without a clear reason.
-	if _, err := TrustedKeys(); err != nil {
+	// update by itself without a clear reason. An empty list would do the
+	// same, for every agent of the release.
+	keys, err := TrustedKeys()
+	if err != nil {
 		t.Fatalf("TrustedKeys() error = %v", err)
+	}
+	if len(keys) == 0 {
+		t.Fatal("TrustedKeys() is empty: add the public key line of the release key to keys.go")
 	}
 }
 
