@@ -10,7 +10,10 @@ PKG := github.com/flywp/server-cli
 #   make release VERSION=v0.2.0
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-BUILD_DATE := $(shell date -u +%Y-%m-%d)
+# The date of the commit, not of the build: the same commit gives the same
+# binary on any computer, so make sign-release can build a release again and
+# compare it with the one that CI published.
+BUILD_DATE := $(shell TZ=UTC git log -1 --date=format-local:%Y-%m-%d --format=%cd 2>/dev/null || date -u +%Y-%m-%d)
 
 LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION) \
 	-X $(PKG)/internal/version.CommitHash=$(COMMIT) \
@@ -98,22 +101,16 @@ release-key: ## Make the release signing key: make release-key KEY=<file outside
 	@test -n "$(KEY)" || { echo "Usage: make release-key KEY=<file outside the repo>"; exit 1; }
 	go run ./tools/releasesign keygen -out "$(KEY)"
 
-# Run this after the Release workflow publishes VERSION. It signs the
-# checksums.txt of the release, checks the signature with the key that this
-# commit trusts, and uploads checksums.txt.sig. Agents install the release
-# 24 hours after the signature. KEY=- reads the key from stdin.
+# Run this after the Release workflow publishes VERSION, on your own
+# computer. tools/sign-release.sh builds the release again from your local
+# tag, checks that GitHub serves the same binaries, signs checksums.txt,
+# checks the signature with the keys of the tag, and uploads
+# checksums.txt.sig. Agents install the release 24 hours after the
+# signature. KEY=- reads the key from stdin.
 sign-release: ## Sign a published release: make sign-release VERSION=v0.2.1 KEY=<file or ->
-	@set -e; \
-	if [ "$(origin VERSION)" != "command line" ]; then \
-		echo "Name the release: make sign-release VERSION=v0.2.1 KEY=<file or ->"; exit 1; fi; \
-	case "$(VERSION)" in v*.*.*) ;; *) echo "Usage: make sign-release VERSION=v0.2.1 KEY=<file or ->"; exit 1;; esac; \
-	test -n "$(KEY)" || { echo "Usage: make sign-release VERSION=v0.2.1 KEY=<file or ->"; exit 1; }; \
-	dir=build/sign/$(VERSION); rm -rf "$$dir"; mkdir -p "$$dir"; \
-	gh release download "$(VERSION)" --pattern checksums.txt --dir "$$dir"; \
-	go run ./tools/releasesign sign -key "$(KEY)" -tag "$(VERSION)" "$$dir/checksums.txt" > "$$dir/checksums.txt.sig"; \
-	go run ./tools/releasesign verify -tag "$(VERSION)" "$$dir/checksums.txt" "$$dir/checksums.txt.sig"; \
-	gh release upload "$(VERSION)" "$$dir/checksums.txt.sig" --clobber; \
-	echo "Signed $(VERSION). Agents install it 24 hours after the signature."
+	@if [ "$(origin VERSION)" != "command line" ] || [ -z "$(KEY)" ]; then \
+		echo "Usage: make sign-release VERSION=v0.2.1 KEY=<file or ->"; exit 1; fi
+	@tools/sign-release.sh "$(VERSION)" "$(KEY)"
 
 clean: ## Remove bin/ and build/
 	rm -rf bin/ build/
