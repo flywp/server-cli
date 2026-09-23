@@ -6,6 +6,8 @@ import "crypto/ed25519"
 // ParseKeys. The private keys are kept outside GitHub: see "make release-key"
 // and "make sign-release". Two keys can be listed while one replaces the other.
 //
+// Give each key a comment that names it (the COMMENT of make release-key).
+//
 // It is a string, not a map, so that a test build can set it with
 // -ldflags "-X github.com/flywp/server-cli/internal/release.trustedKeys=...".
 var trustedKeys = ""

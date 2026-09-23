@@ -16,7 +16,7 @@ func TestKeygenThenSign(t *testing.T) {
 	keyPath := filepath.Join(dir, "release.key")
 
 	var out bytes.Buffer
-	if err := run([]string{"keygen", "-out", keyPath}, nil, &out); err != nil {
+	if err := run([]string{"keygen", "-out", keyPath, "-comment", "server-cli release key for flywp"}, nil, &out); err != nil {
 		t.Fatal(err)
 	}
 
@@ -30,6 +30,10 @@ func TestKeygenThenSign(t *testing.T) {
 	key, _ := os.ReadFile(keyPath)
 	if strings.Contains(out.String(), "PRIVATE KEY") || strings.Contains(out.String(), string(key)) {
 		t.Fatal("keygen printed the private key")
+	}
+	// The comment names the key in the key file and in the output.
+	if !strings.Contains(string(key), "Comment: server-cli release key for flywp") || !strings.Contains(out.String(), "Comment: server-cli release key for flywp") {
+		t.Errorf("the comment is not in the key file and the output:\n%s", out.String())
 	}
 
 	// The printed line parses, and it is the key of the private key file.
@@ -52,6 +56,16 @@ func TestKeygenThenSign(t *testing.T) {
 	data, _ := os.ReadFile(checksums)
 	if _, err := release.Verify(sigFile.Bytes(), data, "v0.2.1", keys, time.Now()); err != nil {
 		t.Errorf("Verify() of the signed file = %v", err)
+	}
+}
+
+func TestKeygenRefusesAMultiLineComment(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "release.key")
+	if err := run([]string{"keygen", "-out", keyPath, "-comment", "a\nProc-Type: 4,ENCRYPTED"}, nil, &bytes.Buffer{}); err == nil {
+		t.Fatal("keygen with a multi-line comment = nil error, want an error")
+	}
+	if _, err := os.Stat(keyPath); err == nil {
+		t.Error("keygen wrote a key file for a bad comment")
 	}
 }
 
