@@ -262,6 +262,8 @@ func TestAutoUpdateIsOff(t *testing.T) {
 	}{
 		{"by the switch", func(_ *testing.T, cfg *Config) { cfg.AutoUpdate = false }, "auto-update is off"},
 		{"for a dev build", func(t *testing.T, _ *Config) { setVersion(t, "dev") }, "auto-update is off: this build has no release version"},
+		{"for a build after a tag", func(t *testing.T, _ *Config) { setVersion(t, "v0.2.0-3-gabcdef1") }, "auto-update is off: this build has no release version"},
+		{"for a build with changes", func(t *testing.T, _ *Config) { setVersion(t, "v0.2.0-dirty") }, "auto-update is off: this build has no release version"},
 		{"without a trusted key", func(*testing.T, *Config) {
 			releaseKeys = func() (map[string]ed25519.PublicKey, error) { return nil, nil }
 		}, "auto-update is off: this build trusts no release key"},

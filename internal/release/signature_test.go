@@ -78,6 +78,49 @@ func TestVerifyRefuses(t *testing.T) {
 	}
 }
 
+func TestVerifyCoversTheTagAndTheKey(t *testing.T) {
+	priv, keys := testKey(t)
+	otherPriv, otherKeys := testKey(t)
+	for id, pub := range otherKeys {
+		keys[id] = pub
+	}
+	otherPub, _ := otherPriv.Public().(ed25519.PublicKey)
+	checksums := []byte("abc  fly-linux-amd64.tar.gz\n")
+	good := string(Sign(priv, "v0.2.1", signTime, checksums))
+	now := signTime.Add(time.Hour)
+
+	// A signature moved to an other release: the tag line is part of the
+	// signed bytes, not only a label.
+	moved := strings.Replace(good, "tag v0.2.1\n", "tag v0.2.2\n", 1)
+	if _, err := Verify([]byte(moved), checksums, "v0.2.2", keys, now); err == nil || !strings.Contains(err.Error(), "is not correct") {
+		t.Errorf("Verify() of a signature moved to v0.2.2 = %v, want a signature error", err)
+	}
+
+	// The key line names an other trusted key.
+	lines := strings.SplitN(good, "\n", 3)
+	swapped := lines[0] + "\nkey " + KeyID(otherPub) + "\n" + lines[2]
+	if _, err := Verify([]byte(swapped), checksums, "v0.2.1", keys, now); err == nil || !strings.Contains(err.Error(), "is not correct") {
+		t.Errorf("Verify() with an other key line = %v, want a signature error", err)
+	}
+}
+
+func TestIsLocalBuild(t *testing.T) {
+	tests := map[string]bool{
+		"v0.2.0":                  false,
+		"v0.2.0-dev.1a2b3c4":      false,
+		"v0.2.0-rc.1":             false,
+		"dev":                     false,
+		"v0.2.0-3-gabcdef1":       true,
+		"v0.2.0-dirty":            true,
+		"v0.2.0-3-gabcdef1-dirty": true,
+	}
+	for v, want := range tests {
+		if got := IsLocalBuild(v); got != want {
+			t.Errorf("IsLocalBuild(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
 // reorder swaps the key and the tag lines of a signature file.
 func reorder(sigFile string) string {
 	lines := strings.Split(sigFile, "\n")

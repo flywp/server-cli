@@ -78,9 +78,11 @@ func (a *agent) startAutoUpdate(now time.Time) {
 	case !a.cfg.AutoUpdate:
 		a.log.Info("auto-update is off", "key", EnvAutoUpdate)
 		return
-	case !semver.IsValid(version.Version):
+	case !semver.IsValid(version.Version) || release.IsLocalBuild(version.Version):
 		// A build without a release tag (go build gives "dev") has no
-		// place in the order of the releases.
+		// place in the order of the releases. A make build of a commit
+		// after a tag (v0.2.0-3-gabcdef1) sorts before that tag, so the
+		// release would replace code that is newer.
 		a.log.Info("auto-update is off: this build has no release version", "version", version.Version)
 		return
 	case err != nil:

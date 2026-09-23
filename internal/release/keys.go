@@ -3,8 +3,8 @@ package release
 import "crypto/ed25519"
 
 // trustedKeys are the public keys of the release signatures, in the format of
-// ParseKeys. The private keys are kept outside GitHub: see "make keygen" and
-// "make sign-release". Two keys can be listed while one replaces the other.
+// ParseKeys. The private keys are kept outside GitHub: see "make release-key"
+// and "make sign-release". Two keys can be listed while one replaces the other.
 //
 // It is a string, not a map, so that a test build can set it with
 // -ldflags "-X github.com/flywp/server-cli/internal/release.trustedKeys=...".
