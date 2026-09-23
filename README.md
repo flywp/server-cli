@@ -145,7 +145,7 @@ make release    # static linux/amd64 and linux/arm64 archives + checksums.txt in
 make help       # lists all targets
 ```
 
-`make release VERSION=v0.2.0` stamps a specific version. The release archives must keep the names `fly-linux-<arch>.tar.gz` with the binary `fly-linux-<arch>` inside: installed CLIs look for these names when they run `fly update`.
+`make release VERSION=v0.2.0` stamps a specific version. The build date is the date of the commit, so the same commit and Go version give the same binary on any computer. The release archives must keep the names `fly-linux-<arch>.tar.gz` with the binary `fly-linux-<arch>` inside: installed CLIs look for these names when they run `fly update`.
 
 CI runs `make check` and `make release` on every pull request and on every push to `develop` and `main`.
 
@@ -168,7 +168,14 @@ After the workflow publishes the release, sign it on your own computer:
 make sign-release VERSION=v0.2.0 KEY=<private key file>    # KEY=- reads the key from stdin
 ```
 
-This signs `checksums.txt`, checks the signature with the key that the code trusts, and uploads `checksums.txt.sig`. Agents install a release by themselves only when it has a valid signature, and only 24 hours after it was signed. Each server then installs it at its own time of day. To stop a bad release in those 24 hours, mark it as a pre-release on GitHub.
+The signature says "this release is the code of my tag", so the command signs only what it can build again:
+
+1. It shows the commit of your **local** tag and asks you to type the tag. Review that commit first: the signature is the approval.
+2. It downloads the archives and `checksums.txt`, and checks the archives against the sums.
+3. It builds the release again from your local tag, with the Go version of the CI build, and compares the binaries byte for byte. A binary holds its commit, so this also proves that CI built your tag.
+4. It signs `checksums.txt`, checks the signature with the keys of the tag, and uploads `checksums.txt.sig`.
+
+If GitHub serves a swapped archive, or the tag on GitHub moved, step 2 or 3 stops before the signature. Agents install a release by themselves only when it has a valid signature, and only 24 hours after it was signed. Each server then installs it at its own time of day. To stop a bad release in those 24 hours, mark it as a pre-release on GitHub.
 
 The signing key is kept outside GitHub, so that a push to GitHub alone cannot reach every server. `make release-key KEY=<file>` makes a key and prints its public key line for `internal/release/keys.go`. Keep the private key in a password manager, with a backup. Never commit it, and never put it in a GitHub secret. If the key is lost or leaked, ship a binary with a new key through a FlyWP update: that path does not use the signature.
 
