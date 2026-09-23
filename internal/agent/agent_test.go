@@ -139,7 +139,7 @@ func TestRunRefusesASecondAgent(t *testing.T) {
 	}
 }
 
-func TestLoadInterval(t *testing.T) {
+func TestLoadStateInterval(t *testing.T) {
 	tests := []struct {
 		name  string
 		saved *state
@@ -160,8 +160,8 @@ func TestLoadInterval(t *testing.T) {
 				}
 			}
 
-			if got := loadInterval(dir, slog.New(&recorder{})); got != tt.want {
-				t.Errorf("loadInterval() = %d, want %d", got, tt.want)
+			if got := loadState(dir, slog.New(&recorder{})).ReportInterval; got != tt.want {
+				t.Errorf("loadState().ReportInterval = %d, want %d", got, tt.want)
 			}
 		})
 	}
