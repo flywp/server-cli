@@ -1,6 +1,6 @@
 // Package agent is the FlyWP monitoring agent: the long-running mode of fly
 // that "fly agent run" starts. It follows the FlyWP monitoring agent
-// contract v0.2.1.
+// contract v0.3.0.
 package agent
 
 import (
