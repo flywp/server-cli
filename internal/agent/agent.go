@@ -152,13 +152,22 @@ func (a *agent) loop(ctx context.Context) (exit bool) {
 	}
 }
 
-// nextAfter returns the next tick after now, and never a tick at or before
-// last. The timer runs on the monotonic clock, but the tick times come from
-// the wall clock: when the wall clock steps back, the timer fires before the
-// tick time, and without last the same tick would run two times.
+// maxStepBack is the largest step back of the wall clock after which the loop
+// still skips the minute that already ran. A larger step means that the clock
+// was wrong before (for example a VM that booted with its clock ahead, then
+// NTP): the loop follows the new clock at once, or it would wait, silent, for
+// the size of the step. A minute that runs two times is harmless: the control
+// plane keeps one sample for each minute.
+const maxStepBack = 2 * time.Minute
+
+// nextAfter returns the next tick after now. After a small step back of the
+// wall clock, it never returns a tick at or before last. The timer runs on the
+// monotonic clock, but the tick times come from the wall clock: when the wall
+// clock steps back, the timer fires before the tick time, and without last
+// the same tick would run two times.
 func nextAfter(now, last time.Time, offset time.Duration) time.Time {
 	next := nextTick(now, offset)
-	if !last.IsZero() && !next.After(last) {
+	if !last.IsZero() && !next.After(last) && last.Sub(now) < maxStepBack {
 		next = nextTick(last, offset)
 	}
 
