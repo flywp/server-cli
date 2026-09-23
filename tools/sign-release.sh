@@ -23,6 +23,9 @@ key=${2:?usage: sign-release.sh <tag> <private key file, or - for stdin>}
 root=$(git rev-parse --show-toplevel)
 dir="$root/build/sign/$version"
 
+# make passes "~/key" as it is: the shell does not expand a "~" that is not
+# at the start of a word.
+case "$key" in "~/"*) key="$HOME/${key#\~/}" ;; esac
 if [ "$key" != "-" ]; then
 	[ -f "$key" ] || { echo "No key file: $key" >&2; exit 1; }
 	key="$(cd "$(dirname "$key")" && pwd)/$(basename "$key")"

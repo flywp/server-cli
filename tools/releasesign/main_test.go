@@ -83,6 +83,23 @@ func TestKeygenDoesNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestKeyPathsExpandTheHomeDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// make passes "~/release.key" as it is: the shell does not expand it.
+	var out bytes.Buffer
+	if err := run([]string{"keygen", "-out", "~/release.key"}, nil, &out); err != nil {
+		t.Fatalf("keygen -out ~/release.key: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "release.key")); err != nil {
+		t.Fatalf("the key is not in the home directory: %v", err)
+	}
+	if _, err := readKey("~/release.key", nil); err != nil {
+		t.Errorf("readKey(~/release.key) = %v", err)
+	}
+}
+
 func TestReadKeyRefusesText(t *testing.T) {
 	if _, err := readKey("-", strings.NewReader("not a key")); err == nil {
 		t.Error("readKey() of text = nil error, want an error")
