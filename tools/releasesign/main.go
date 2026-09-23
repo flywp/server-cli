@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -63,6 +64,10 @@ func keygen(args []string, stdout io.Writer) error {
 	if *out == "" {
 		return errors.New("keygen needs -out <private key file>")
 	}
+	path, err := expandHome(*out)
+	if err != nil {
+		return err
+	}
 	if strings.ContainsAny(*comment, "\r\n") {
 		return errors.New("the comment must be one line")
 	}
@@ -76,7 +81,7 @@ func keygen(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	f, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -92,7 +97,7 @@ func keygen(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	msg := fmt.Sprintf("Private key: %s (keep it outside GitHub, with a backup)\n", *out)
+	msg := fmt.Sprintf("Private key: %s (keep it outside GitHub, with a backup)\n", path)
 	if *comment != "" {
 		msg += fmt.Sprintf("Comment: %s\n", *comment)
 	}
@@ -163,12 +168,27 @@ func verify(args []string, stdout io.Writer) error {
 	return err
 }
 
+// expandHome replaces a leading "~/" with the home directory. A shell does
+// not do this in "make release-key KEY=~/key": the "~" is not at the start of
+// a word.
+func expandHome(path string) (string, error) {
+	rest, ok := strings.CutPrefix(path, "~/")
+	if !ok {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, rest), nil
+}
+
 func readKey(path string, stdin io.Reader) (ed25519.PrivateKey, error) {
 	var data []byte
 	var err error
 	if path == "-" {
 		data, err = io.ReadAll(io.LimitReader(stdin, 1<<16))
-	} else {
+	} else if path, err = expandHome(path); err == nil {
 		data, err = os.ReadFile(path)
 	}
 	if err != nil {
