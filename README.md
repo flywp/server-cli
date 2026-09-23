@@ -177,7 +177,7 @@ The signature says "this release is the code of my tag", so the command signs on
 
 If GitHub serves a swapped archive, or the tag on GitHub moved, step 2 or 3 stops before the signature. Agents install a release by themselves only when it has a valid signature, and only 24 hours after it was signed. Each server then installs it at its own time of day. To stop a bad release in those 24 hours, mark it as a pre-release on GitHub.
 
-The signing key is kept outside GitHub, so that a push to GitHub alone cannot reach every server. `make release-key KEY=<file>` makes a key and prints its public key line for `internal/release/keys.go`. Keep the private key in a password manager, with a backup. Never commit it, and never put it in a GitHub secret. If the key is lost or leaked, ship a binary with a new key through a FlyWP update: that path does not use the signature.
+The signing key is kept outside GitHub, so that a push to GitHub alone cannot reach every server. `make release-key KEY=<file>` makes a key and prints its public key line for `internal/release/keys.go`. `COMMENT=` names the key, in the key file and next to its line in `keys.go` (the default is "server-cli release key for flywp"). Keep the private key in a password manager, with a backup. Never commit it, and never put it in a GitHub secret. If the key is lost or leaked, ship a binary with a new key through a FlyWP update: that path does not use the signature.
 
 ### Dev pre-releases
 

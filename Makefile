@@ -97,9 +97,11 @@ dev-release: ## Tag HEAD as a dev pre-release and push the tag (CI publishes it)
 # signature from a key that is kept outside GitHub. Make the key one time, put
 # the printed public key line in internal/release/keys.go, and keep the
 # private key in a password manager, with a backup. Never commit it.
-release-key: ## Make the release signing key: make release-key KEY=<file outside the repo>
-	@test -n "$(KEY)" || { echo "Usage: make release-key KEY=<file outside the repo>"; exit 1; }
-	go run ./tools/releasesign keygen -out "$(KEY)"
+# COMMENT names the key, in the key file and next to its line in keys.go.
+COMMENT ?= server-cli release key for flywp
+release-key: ## Make the release signing key: make release-key KEY=<file outside the repo> [COMMENT=...]
+	@test -n "$(KEY)" || { echo "Usage: make release-key KEY=<file outside the repo> [COMMENT=\"...\"]"; exit 1; }
+	go run ./tools/releasesign keygen -out "$(KEY)" -comment "$(COMMENT)"
 
 # Run this after the Release workflow publishes VERSION, on your own
 # computer. tools/sign-release.sh builds the release again from your local

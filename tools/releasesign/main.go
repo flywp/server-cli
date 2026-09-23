@@ -2,7 +2,7 @@
 // file of a release. The agent installs a release by itself only when the
 // signature is valid. It is not part of the fly binary.
 //
-//	go run ./tools/releasesign keygen -out <private key file>
+//	go run ./tools/releasesign keygen -out <private key file> [-comment "server-cli release key for flywp"]
 //	go run ./tools/releasesign sign -key <private key file or -> -tag v0.2.1 checksums.txt > checksums.txt.sig
 //	go run ./tools/releasesign verify -tag v0.2.1 checksums.txt checksums.txt.sig
 //
@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/flywp/server-cli/internal/release"
@@ -50,15 +51,20 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 
 // keygen writes a new private key to a file that must not exist, and prints
 // the public key line for internal/release/keys.go. It never prints the
-// private key.
+// private key. The comment names the key: it goes in the key file as a PEM
+// header, and next to the public key line.
 func keygen(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
 	out := fs.String("out", "", "the file for the private key (it must not exist)")
+	comment := fs.String("comment", "", "a name for the key, for example \"server-cli release key for flywp\"")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *out == "" {
 		return errors.New("keygen needs -out <private key file>")
+	}
+	if strings.ContainsAny(*comment, "\r\n") {
+		return errors.New("the comment must be one line")
 	}
 
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -74,7 +80,11 @@ func keygen(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := pem.Encode(f, &pem.Block{Type: "PRIVATE KEY", Bytes: der}); err != nil {
+	block := &pem.Block{Type: "PRIVATE KEY", Bytes: der}
+	if *comment != "" {
+		block.Headers = map[string]string{"Comment": *comment}
+	}
+	if err := pem.Encode(f, block); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -82,7 +92,12 @@ func keygen(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(stdout, "Private key: %s (keep it outside GitHub, with a backup)\nPublic key line for internal/release/keys.go:\n%s\n", *out, release.KeyLine(pub))
+	msg := fmt.Sprintf("Private key: %s (keep it outside GitHub, with a backup)\n", *out)
+	if *comment != "" {
+		msg += fmt.Sprintf("Comment: %s\n", *comment)
+	}
+	msg += fmt.Sprintf("Public key line for internal/release/keys.go:\n%s\n", release.KeyLine(pub))
+	_, err = io.WriteString(stdout, msg)
 	return err
 }
 
