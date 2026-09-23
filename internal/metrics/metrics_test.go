@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/flywp/server-cli/internal/agent/wire"
 )
 
 // server is a fake file system root with the files that the collector reads.
@@ -276,7 +278,7 @@ func TestStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := c.Status(context.Background())
-	if !s.RebootRequired || s.UpdatesTotal != 33 || s.UpdatesSecurity != 6 {
+	if !s.RebootRequired || !counts(s, 33, 6) {
 		t.Errorf("status = %+v, want a restart and 33 updates with 6 security updates", s)
 	}
 	if s.OS != "Ubuntu 24.04.1 LTS" || s.Kernel != "6.8.0-45-generic" || s.UptimeSeconds != 1892344 || s.Arch != runtime.GOARCH {
@@ -310,8 +312,9 @@ func TestStatusWithoutAptCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := c.Status(context.Background())
-	if s.UpdatesTotal != 0 || s.UpdatesSecurity != 0 || s.RebootRequired {
-		t.Errorf("status = %+v, want 0 updates and no restart", s)
+	// Not known is null, not a false "no updates".
+	if s.UpdatesTotal != nil || s.UpdatesSecurity != nil || s.RebootRequired {
+		t.Errorf("status = %+v, want unknown (nil) updates and no restart", s)
 	}
 	if s.OS == "" {
 		t.Error("status has no OS: one missing value must not clear the others")
@@ -330,8 +333,8 @@ func TestAptCheckWithWarningsBeforeTheResult(t *testing.T) {
 	if _, err := c.Sample(time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if s := c.Status(context.Background()); s.UpdatesTotal != 29 || s.UpdatesSecurity != 26 {
-		t.Errorf("updates = %d;%d, want 29;26 from the last line", s.UpdatesTotal, s.UpdatesSecurity)
+	if s := c.Status(context.Background()); !counts(s, 29, 26) {
+		t.Errorf("updates = %v;%v, want 29;26 from the last line", s.UpdatesTotal, s.UpdatesSecurity)
 	}
 }
 
@@ -348,9 +351,14 @@ func TestAFailedCountKeepsTheLastCounts(t *testing.T) {
 	if _, err := c.Sample(time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if s := c.Status(context.Background()); s.UpdatesTotal != 33 || s.UpdatesSecurity != 6 {
-		t.Errorf("updates = %d;%d, want the last counts 33;6", s.UpdatesTotal, s.UpdatesSecurity)
+	if s := c.Status(context.Background()); !counts(s, 33, 6) {
+		t.Errorf("updates = %v;%v, want the last counts 33;6", s.UpdatesTotal, s.UpdatesSecurity)
 	}
+}
+
+// counts reports whether s has the known update counts total and security.
+func counts(s wire.Status, total, security uint64) bool {
+	return s.UpdatesTotal != nil && s.UpdatesSecurity != nil && *s.UpdatesTotal == total && *s.UpdatesSecurity == security
 }
 
 func TestNoCountedInterfaceIsNotZeroTraffic(t *testing.T) {

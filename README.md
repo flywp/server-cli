@@ -2,7 +2,7 @@
 
 Easy CLI tool for servers managed by FlyWP.
 
-Conforms to the FlyWP monitoring agent contract v0.2.1.
+Conforms to the FlyWP monitoring agent contract v0.3.0.
 
 ## Installation
 
