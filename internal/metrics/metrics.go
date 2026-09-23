@@ -268,7 +268,7 @@ func (c *Collector) Status(context.Context) wire.Status {
 
 // refreshUpdates counts the waiting updates at the first call and then each
 // hour. If apt-check fails, the last counts stay. Without any count, Status
-// sends null (contract v0.3.0).
+// sends null (contract v0.3.1).
 func (c *Collector) refreshUpdates(ctx context.Context) {
 	if !c.updatesAt.IsZero() && time.Since(c.updatesAt) < updatesEvery {
 		return
