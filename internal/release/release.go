@@ -72,6 +72,13 @@ func CheckForUpdates(ctx context.Context) (*Update, error) {
 // commits since the tag, the commit hash and "-dirty" for local changes.
 var describeSuffix = regexp.MustCompile(`(-\d+-g[0-9a-f]+)?(-dirty)?$`)
 
+// IsLocalBuild reports whether v comes from git describe on a commit that is
+// not a release tag, for example v0.2.0-3-gabcdef1 or v0.2.0-dirty. Such a
+// build has code that no release has, so it must not update by itself.
+func IsLocalBuild(v string) bool {
+	return describeSuffix.FindString(v) != ""
+}
+
 // isNewer reports whether the release version latest is newer than current.
 // comparable is false when current is not built from a release tag.
 func isNewer(latest, current string) (newer, comparable bool) {
@@ -91,8 +98,10 @@ func LatestRelease(ctx context.Context) (*GithubRelease, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// The agent reads this each day without a person: a huge reply must not
+	// use all of its memory.
 	var release GithubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAssetSize)).Decode(&release); err != nil {
 		return nil, fmt.Errorf("reading release information: %w", err)
 	}
 
