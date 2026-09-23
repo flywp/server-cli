@@ -1,0 +1,17 @@
+package release
+
+import "crypto/ed25519"
+
+// trustedKeys are the public keys of the release signatures, in the format of
+// ParseKeys. The private keys are kept outside GitHub: see "make keygen" and
+// "make sign-release". Two keys can be listed while one replaces the other.
+//
+// It is a string, not a map, so that a test build can set it with
+// -ldflags "-X github.com/flywp/server-cli/internal/release.trustedKeys=...".
+var trustedKeys = ""
+
+// TrustedKeys returns the public keys that the agent accepts for a release
+// signature. An empty map means that no release can install by itself.
+func TrustedKeys() (map[string]ed25519.PublicKey, error) {
+	return ParseKeys(trustedKeys)
+}
