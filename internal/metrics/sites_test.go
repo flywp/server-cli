@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -374,6 +376,63 @@ func TestSitesDiskWalkThatHangs(t *testing.T) {
 	if running {
 		t.Error("the walk still runs: a walk that hangs must not stop the next walks")
 	}
+}
+
+func TestSitesWarnOneTimeForFilesThatCannotBeRead(t *testing.T) {
+	srv := newServer(t)
+	srv.cgroup("a1", 1, 1, 0)
+	c := sitesCollector(t, srv, []fakeContainer{{"a1", srv.home(".fly")}})
+	rec := &levels{}
+	c.log = slog.New(rec)
+	c.walker.walk = func(context.Context, string) (uint64, int, error) { return 4096, 9, nil }
+
+	for i := range 3 {
+		c.walker.mu.Lock()
+		c.walker.last = time.Time{} // the hour passed
+		c.walker.mu.Unlock()
+		if _, err := c.Sample(time.Now().Add(time.Duration(i+1) * time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		waitWalk(t, c)
+	}
+
+	msg := "some files of a site cannot be read; its disk use is lower than the real use"
+	if got := rec.count(slog.LevelWarn, msg); got != 1 {
+		t.Errorf("%d warnings for 3 walks, want 1", got)
+	}
+	if got := rec.count(slog.LevelDebug, msg); got != 2 {
+		t.Errorf("%d debug lines for 3 walks, want 2", got)
+	}
+}
+
+// levels is a slog handler that keeps the level and the message of each
+// record.
+type levels struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (l *levels) Enabled(context.Context, slog.Level) bool { return true }
+func (l *levels) WithAttrs([]slog.Attr) slog.Handler       { return l }
+func (l *levels) WithGroup(string) slog.Handler            { return l }
+
+func (l *levels) Handle(_ context.Context, r slog.Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.records = append(l.records, r)
+	return nil
+}
+
+func (l *levels) count(level slog.Level, msg string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, r := range l.records {
+		if r.Level == level && r.Message == msg {
+			n++
+		}
+	}
+	return n
 }
 
 // waitWalk waits until the disk walk that runs ends.

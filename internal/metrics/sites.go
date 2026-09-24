@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -235,6 +236,9 @@ type diskWalker struct {
 	running bool
 	last    time.Time         // the start of the last walk
 	results map[string]uint64 // by directory, not yet sent
+	// skipWarned holds the directories whose skipped files were logged as a
+	// warning. Only the walk goroutine uses it.
+	skipWarned map[string]bool
 	// done is closed when the running walk ends. Tests wait for it.
 	done chan struct{}
 	// walk measures one folder, and timeout limits it. Tests replace them.
@@ -243,14 +247,12 @@ type diskWalker struct {
 }
 
 func newDiskWalker() *diskWalker {
-	return &diskWalker{walk: diskUsage, timeout: sitesDiskTimeout}
+	return &diskWalker{walk: diskUsage, timeout: sitesDiskTimeout, skipWarned: map[string]bool{}}
 }
 
 // start begins a walk of the folders, by directory, when no walk runs and the
 // last walk started one hour ago or more.
-func (w *diskWalker) start(folders map[string]string, log interface {
-	Warn(msg string, args ...any)
-}) {
+func (w *diskWalker) start(folders map[string]string, log *slog.Logger) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.running || len(folders) == 0 || (!w.last.IsZero() && time.Since(w.last) < sitesDiskEvery) {
@@ -277,7 +279,15 @@ func (w *diskWalker) start(folders map[string]string, log interface {
 				continue
 			}
 			if skipped > 0 {
-				log.Warn("some files of a site cannot be read; its disk use is lower than the real use", "directory", name, "skipped", skipped)
+				// The same folders are skipped each hour, for example the
+				// databases in ~/.fly that belong to the container user:
+				// warn one time for each directory, then log at debug.
+				level := slog.LevelDebug
+				if !w.skipWarned[name] {
+					w.skipWarned[name] = true
+					level = slog.LevelWarn
+				}
+				log.Log(context.Background(), level, "some files of a site cannot be read; its disk use is lower than the real use", "directory", name, "skipped", skipped)
 			}
 			results[name] = used
 		}
