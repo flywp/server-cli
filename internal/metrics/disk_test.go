@@ -194,6 +194,31 @@ func TestDiskActivityIsNotKnown(t *testing.T) {
 	}
 }
 
+func TestACounterThatWentBackInAWindowMakesTheMinuteNotKnown(t *testing.T) {
+	srv := newServer(t)
+	srv.blockDevice("vda")
+	c := srv.collector(t.TempDir())
+	base := time.Now().Add(time.Second)
+
+	// vda is attached again at 20 s, with the same name: its counter
+	// starts from 0. At the tick it is above the tick before again, but the
+	// delta of the minute is not the real activity.
+	srv.disks(map[string]diskCounters{"vda": {ReadOps: 1000}})
+	if _, err := c.Sample(base); err != nil {
+		t.Fatal(err)
+	}
+	c.Read(base.Add(10 * time.Second))
+	srv.disks(map[string]diskCounters{"vda": {ReadOps: 5}})
+	c.Read(base.Add(20 * time.Second))
+	srv.disks(map[string]diskCounters{"vda": {ReadOps: 2000}})
+
+	s, err := c.Sample(base.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkNoDiskActivity(t, s)
+}
+
 func TestFirstSampleHasNoDiskActivity(t *testing.T) {
 	srv := newServer(t)
 	srv.blockDevice("vda")
