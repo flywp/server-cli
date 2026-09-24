@@ -33,10 +33,10 @@ func chain(prev *reading, readings []reading, cur reading) []reading {
 	return append(out, cur)
 }
 
-// setPeaks sets the peaks of the minute in s, and the pressure: the highest
-// value of the windows from one reading to the next (contract v0.4.0). s already holds
-// the values of the minute, from prev to cur. A peak is never less than the
-// value of its minute.
+// setPeaks sets the peaks of the minute in s, the pressure and the disk
+// activity. A peak is the highest value of the windows from one reading to
+// the next (contract v0.4.0). s already holds the values of the minute, from
+// prev to cur. A peak is never less than the value of its minute.
 func setPeaks(s *wire.Sample, prev *reading, readings []reading, cur reading) {
 	all := chain(prev, readings, cur)
 
@@ -61,6 +61,7 @@ func setPeaks(s *wire.Sample, prev *reading, readings []reading, cur reading) {
 	}
 
 	setPressure(s, prev, all, cur)
+	setDiskActivity(s, prev, all, cur)
 
 	if !s.NetCountersReset {
 		if in, out, ok := netPeaks(all); ok {
