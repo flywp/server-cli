@@ -1,7 +1,8 @@
 // Package metrics measures a Linux server for the monitoring agent: CPU,
 // load, memory, swap, disk, network, pressure (PSI) and disk activity each
-// minute, with the peaks of the minute from a reading each 10 seconds, and
-// the status of the server (contract v0.4.0). It needs no root.
+// minute, with the peaks of the minute from a reading each 10 seconds, the
+// use of each site, and the status of the server (contract v0.5.0). It needs
+// no root.
 package metrics
 
 import (
@@ -73,6 +74,9 @@ type Collector struct {
 	release  func() string
 	aptCheck func(ctx context.Context) ([]byte, error)
 	docker   *dockerapi.Client
+	// home is the home folder of the server user, where the Docker Compose
+	// projects of the sites are.
+	home string
 
 	// prev is the reading of the last tick, and readings are the readings
 	// after it, oldest first. They give the windows of the next sample.
@@ -90,6 +94,11 @@ type Collector struct {
 	// dockerWarned is true after the warning that the state of Docker is
 	// not known, until it is known again.
 	dockerWarned bool
+
+	// prevContainers are the CPU times of the containers at the last tick,
+	// and walker measures the disk use of the sites.
+	prevContainers *containerReadings
+	walker         *diskWalker
 
 	updatesAt       time.Time
 	updatesKnown    bool
@@ -110,6 +119,8 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 		minFirst: minFirstMinute,
 	}
 	c.docker = dockerapi.New(c.file("var/run/docker.sock"))
+	c.home = homeDir()
+	c.walker = newDiskWalker()
 
 	// Take a reading now, so that the first sample has a CPU value for the
 	// time since the start. The saved reading comes before it only when it is
@@ -177,6 +188,7 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 	if err != nil {
 		return wire.Sample{}, err
 	}
+	readAt := time.Now()
 
 	// A tick right after the start has no minute to measure. Its reading
 	// starts the next minute, which then has all its values.
@@ -184,6 +196,10 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 		c.fromStart = false
 		if d := cur.At.Sub(c.prev.At); d >= 0 && d < c.minFirst {
 			c.prev, c.readings = &cur, nil
+			// The CPU times of the containers start the next minute too,
+			// so that its sites have a CPU value. A new process has no
+			// result of a disk walk to lose.
+			c.sites(context.Background(), cur, readAt)
 			if err := statefile.Write(c.path, cur); err != nil {
 				c.log.Warn("saving the counters", "error", err)
 			}
@@ -223,6 +239,9 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 	}
 
 	setPeaks(&s, c.prev, c.readings, cur)
+	// The sites come after each step that can fail: they take the result
+	// of the disk walk, which must not go with a sample that is dropped.
+	s.Sites = c.sites(context.Background(), cur, readAt)
 
 	c.prev = &cur
 	c.readings = nil

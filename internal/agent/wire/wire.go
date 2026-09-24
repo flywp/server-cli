@@ -1,5 +1,5 @@
 // Package wire holds the JSON bodies of the FlyWP monitoring agent contract
-// v0.4.0: the requests that the agent sends and the replies that it reads.
+// v0.5.0: the requests that the agent sends and the replies that it reads.
 package wire
 
 import (
@@ -88,6 +88,21 @@ type Sample struct {
 	DiskWriteMaxBytesPerSecond *uint64 `json:"disk_write_max_bytes_per_second"`
 	DiskReadMaxOpsPerSecond    *uint64 `json:"disk_read_max_ops_per_second"`
 	DiskWriteMaxOpsPerSecond   *uint64 `json:"disk_write_max_ops_per_second"`
+
+	// Sites holds one item for each Docker Compose project in the home
+	// folder of the server user (contract v0.5.0). nil (JSON null) means that
+	// the agent cannot read Docker; an empty, non-nil slice ([]) means that
+	// Docker runs and no project matches.
+	Sites []Site `json:"sites"`
+}
+
+// Site is the use of one Docker Compose project in the minute. nil (JSON
+// null) means "not known". DiskUsedBytes is set in one sample each hour.
+type Site struct {
+	Directory       string   `json:"directory"`
+	CPUPercent      *float64 `json:"cpu_percent"`
+	MemoryUsedBytes *uint64  `json:"memory_used_bytes"`
+	DiskUsedBytes   *uint64  `json:"disk_used_bytes"`
 }
 
 // MetricsReply is the reply to POST /agent/v1/metrics.
