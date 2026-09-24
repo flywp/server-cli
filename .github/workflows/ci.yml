@@ -33,5 +33,11 @@ jobs:
     - name: Run the checks
       run: make check
 
+    # make check runs as the runner user, so the tests that need root skip.
+    # They cover "sudo fly update": the owner of the binary, and a link that
+    # a hostile owner of the binary folder puts in place of the new file.
+    - name: Run the tests that need root
+      run: sudo env "PATH=$PATH" "GOCACHE=$(go env GOCACHE)" "GOMODCACHE=$(go env GOMODCACHE)" go test -count=1 -run 'TestReplaceBinary' ./internal/release/
+
     - name: Build the release archives
       run: make release
