@@ -156,8 +156,14 @@ func (a *agent) loop(ctx context.Context) (exit bool) {
 			return false
 		case <-timer.C:
 			if wake.Before(next) {
-				a.collector.Read(wake)
-				continue
+				// The reading has the time at which it ran, so that a late
+				// timer or a step of the wall clock does not change the
+				// length of a window.
+				a.collector.Read(time.Now())
+				// A reading that ran late must not skip the tick after it.
+				if time.Now().Before(next) {
+					continue
+				}
 			}
 			a.last = next
 			if a.tick(ctx, next) {
@@ -213,7 +219,9 @@ func (a *agent) tick(ctx context.Context, now time.Time) (exit bool) {
 	a.log.Debug("tick", "at", now)
 
 	if a.collector != nil {
-		s, err := a.collector.Sample(now)
+		// The reading has the time at which it ran; the sample has the time
+		// of its tick, for its minute on the control plane.
+		s, err := a.collector.Sample(time.Now())
 		if err != nil {
 			a.log.Warn("skipping the sample of this minute", "error", err)
 		} else {
