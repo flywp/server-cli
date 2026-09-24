@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/flywp/server-cli/internal/version"
@@ -52,11 +53,18 @@ func noRedirects(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
+// maxErrorBody limits the part of an error reply that the agent keeps for
+// its log.
+const maxErrorBody = 1 << 10
+
 // StatusError is a reply from the control plane that is not 200 OK.
 type StatusError struct {
 	StatusCode int
 	// RetryAfter is the wait that the Retry-After header asks for, or 0.
 	RetryAfter time.Duration
+	// Body is the start of the reply, for example the validation errors of
+	// a 400.
+	Body string
 }
 
 func (e *StatusError) Error() string {
@@ -93,8 +101,12 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxReplySize))
-		return &StatusError{StatusCode: resp.StatusCode, RetryAfter: retryAfter(resp.Header.Get("Retry-After"), time.Now())}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		return &StatusError{
+			StatusCode: resp.StatusCode,
+			RetryAfter: retryAfter(resp.Header.Get("Retry-After"), time.Now()),
+			Body:       strings.ToValidUTF8(string(body), "?"),
+		}
 	}
 
 	if out == nil {

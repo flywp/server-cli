@@ -33,7 +33,7 @@ FLY_AGENT_SERVER_ID and STATE_DIRECTORY from the environment.`,
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, os.Interrupt)
 		defer stop()
 
-		return agent.Run(ctx, cfg, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+		return agent.Run(ctx, cfg, slog.New(slog.NewTextHandler(os.Stderr, nil)), nil)
 	},
 }
 
