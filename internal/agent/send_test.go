@@ -173,6 +173,65 @@ func TestBackoffDoublesUpToTenMinutes(t *testing.T) {
 	})
 }
 
+func TestARecoveryIsLogged(t *testing.T) {
+	const msg = "the control plane accepts the requests again"
+	tests := []struct {
+		name string
+		code int
+	}{
+		{"a 503", http.StatusServiceUnavailable},
+		{"a 401", http.StatusUnauthorized},
+		{"a 429", http.StatusTooManyRequests},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				// Two failures, then the control plane answers again.
+				cp := &fakeCP{metricsReply: func(call int, req *wire.MetricsRequest) (*wire.MetricsReply, error) {
+					if call < 2 {
+						return nil, &StatusError{StatusCode: tt.code}
+					}
+					return &wire.MetricsReply{Accepted: len(req.Samples)}, nil
+				}}
+
+				rec := runFor(t, 20*time.Minute, t.TempDir(), cp, &fakeCollector{})
+
+				got := rec.recordsOf(msg)
+				if len(got) != 1 {
+					t.Fatalf("%d lines %q, want 1 after the recovery, and none for the later successes", len(got), msg)
+				}
+				if got[0].Level != slog.LevelInfo || attr(got[0], "request") != "samples" {
+					t.Errorf("line = %v %q request=%v, want Info for the samples", got[0].Level, msg, attr(got[0], "request"))
+				}
+				// The first failure is at minute 0; the recovery comes at the
+				// time of the third request.
+				if want := cp.metricsAt[2].Sub(at(0)).Round(time.Second).String(); attr(got[0], "failing_for") != want {
+					t.Errorf("failing_for = %v, want %s", attr(got[0], "failing_for"), want)
+				}
+			})
+		})
+	}
+}
+
+func TestARecoveryOfTheEventsIsLoggedApart(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cp := &fakeCP{eventsReply: func(call int, req *wire.EventsRequest) (*wire.EventsReply, error) {
+			if call == 0 {
+				return nil, &StatusError{StatusCode: http.StatusServiceUnavailable}
+			}
+			return &wire.EventsReply{Accepted: len(req.Events)}, nil
+		}}
+
+		rec := runFor(t, 3*time.Minute, t.TempDir(), cp, &fakeCollector{})
+
+		got := rec.recordsOf("the control plane accepts the requests again")
+		if len(got) != 1 || attr(got[0], "request") != "events" {
+			t.Errorf("recovery lines = %d, want 1 for the events only (the samples never failed)", len(got))
+		}
+	})
+}
+
 func TestEventsKeepTheirIDAndDoNotBlockTheMetrics(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cp := &fakeCP{eventsReply: func(call int, req *wire.EventsRequest) (*wire.EventsReply, error) {

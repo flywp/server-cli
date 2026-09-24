@@ -46,9 +46,18 @@ const (
 // waits on its own: a broken events route must not stop the metrics.
 type backoff struct {
 	// retryAt is the earliest time of the next request, and failures is the
-	// number of failed requests in a row.
-	retryAt  time.Time
-	failures int
+	// number of failed requests in a row. failingSince is the start of the
+	// first report whose request failed and kept its data, or zero.
+	retryAt      time.Time
+	failures     int
+	failingSince time.Time
+}
+
+// failed records a failure that keeps the data.
+func (b *backoff) failed(start time.Time) {
+	if b.failingSince.IsZero() {
+		b.failingSince = start
+	}
 }
 
 // waiting reports whether the request must wait at the time of the report.
@@ -139,6 +148,11 @@ func (a *agent) sendSamples(ctx context.Context, start time.Time) bool {
 func (a *agent) outcome(ctx context.Context, b *backoff, start time.Time, err error, what string, n int) outcome {
 	if err == nil {
 		b.failures = 0
+		// After the warnings of a failure, say that the data goes again.
+		if !b.failingSince.IsZero() {
+			a.log.Info("the control plane accepts the requests again", "request", what, "failing_for", start.Sub(b.failingSince).Round(time.Second))
+			b.failingSince = time.Time{}
+		}
 		return sent
 	}
 
@@ -155,15 +169,16 @@ func (a *agent) outcome(ctx context.Context, b *backoff, start time.Time, err er
 	if errors.As(err, &statusErr) {
 		switch code := statusErr.StatusCode; {
 		case code == http.StatusBadRequest:
-			b.failures = 0
+			b.failures, b.failingSince = 0, time.Time{}
 			a.log.Error("the control plane refused the request as not valid; dropping its data", "request", what, "count", n, "reply", statusErr.Body)
 			return refused
 		case code == http.StatusUnprocessableEntity && what == "samples":
-			b.failures = 0
+			b.failures, b.failingSince = 0, time.Time{}
 			a.log.Warn("the control plane rejected every sample; dropping them", "count", n, "reply", statusErr.Body)
 			return refused
 		case code == http.StatusUnauthorized:
 			b.retryAt = start.Add(unauthorizedWait)
+			b.failed(start)
 			a.log.Error("the control plane does not accept the token; keeping the data", "request", what, "retry_in", unauthorizedWait)
 			return later
 		case code == http.StatusTooManyRequests:
@@ -172,6 +187,7 @@ func (a *agent) outcome(ctx context.Context, b *backoff, start time.Time, err er
 				wait = throttledWait
 			}
 			b.retryAt = start.Add(wait)
+			b.failed(start)
 			a.log.Warn("the control plane asks the agent to wait; keeping the data", "request", what, "retry_in", wait)
 			return later
 		}
@@ -182,6 +198,7 @@ func (a *agent) outcome(ctx context.Context, b *backoff, start time.Time, err er
 	b.failures++
 	wait := min(firstBackoff<<min(b.failures-1, 4), maxBackoff)
 	b.retryAt = start.Add(wait)
+	b.failed(start)
 	a.log.Warn("the request failed; keeping its data", "request", what, "error", err, "retry_in", wait)
 
 	return later

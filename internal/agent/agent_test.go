@@ -30,6 +30,34 @@ func (r *recorder) Handle(_ context.Context, rec slog.Record) error {
 	return nil
 }
 
+// recordsOf returns the records with message msg.
+func (r *recorder) recordsOf(msg string) []slog.Record {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var out []slog.Record
+	for _, rec := range r.records {
+		if rec.Message == msg {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// attr returns the value of the attribute key of a record, as a string, or
+// nil.
+func attr(rec slog.Record, key string) any {
+	var v any
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			v = a.Value.String()
+			return false
+		}
+		return true
+	})
+	return v
+}
+
 // times returns the times of the records with message msg.
 func (r *recorder) times(msg string) []time.Time {
 	r.mu.Lock()
