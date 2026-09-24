@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flywp/server-cli/internal/agent"
 	"github.com/flywp/server-cli/internal/agent/wire"
 	"github.com/flywp/server-cli/internal/dockerapi"
 	"github.com/flywp/server-cli/internal/testutil"
@@ -433,6 +434,26 @@ func (l *levels) count(level slog.Level, msg string) int {
 		}
 	}
 	return n
+}
+
+func TestSitesHaveCPUAfterAShortFirstMinute(t *testing.T) {
+	srv := newServer(t)
+	srv.cgroup("a1", 1000000, 1, 0)
+	c := sitesCollector(t, srv, []fakeContainer{{"a1", srv.home("example.com")}})
+	c.minFirst = minFirstMinute
+
+	first := time.Now().Add(time.Second)
+	if _, err := c.Sample(first); !errors.Is(err, agent.ErrNoSample) {
+		t.Fatalf("Sample() 1 s after the start = %v, want ErrNoSample", err)
+	}
+	srv.cgroup("a1", 1600000, 1, 0)
+	s, err := c.Sample(first.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Sites) != 1 || s.Sites[0].CPUPercent == nil || !near(*s.Sites[0].CPUPercent, 1) {
+		t.Errorf("sites = %+v, want example.com with 1%%: the short minute starts the CPU times too", s.Sites)
+	}
 }
 
 // waitWalk waits until the disk walk that runs ends.

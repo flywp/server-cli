@@ -196,6 +196,10 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 		c.fromStart = false
 		if d := cur.At.Sub(c.prev.At); d >= 0 && d < c.minFirst {
 			c.prev, c.readings = &cur, nil
+			// The CPU times of the containers start the next minute too,
+			// so that its sites have a CPU value. A new process has no
+			// result of a disk walk to lose.
+			c.sites(context.Background(), cur, readAt)
 			if err := statefile.Write(c.path, cur); err != nil {
 				c.log.Warn("saving the counters", "error", err)
 			}
