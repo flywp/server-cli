@@ -265,3 +265,22 @@ func parseDiskstats(data []byte) (map[string]diskCounters, error) {
 
 	return out, nil
 }
+
+// parseCPUCount counts the CPUs that are online: the cpuN lines of /proc/stat.
+func parseCPUCount(data []byte) (int, error) {
+	n := 0
+	s := bufio.NewScanner(bytes.NewReader(data))
+	for s.Scan() {
+		name, _, _ := strings.Cut(s.Text(), " ")
+		if rest, ok := strings.CutPrefix(name, "cpu"); ok && rest != "" {
+			if _, err := strconv.Atoi(rest); err == nil {
+				n++
+			}
+		}
+	}
+	if n == 0 {
+		return 0, fmt.Errorf("/proc/stat has no cpuN line")
+	}
+
+	return n, nil
+}
