@@ -32,6 +32,12 @@ func cleanSample(s wire.Sample) wire.Sample {
 	} {
 		*v = clampInt(*v)
 	}
+	s.CPUMaxPercent = clampPtr(s.CPUMaxPercent, 0, 100)
+	for _, v := range []**uint64{
+		&s.MemoryUsedMaxBytes, &s.SwapUsedMaxBytes, &s.NetInMaxBytesPerSecond, &s.NetOutMaxBytesPerSecond,
+	} {
+		*v = clampIntPtr(*v)
+	}
 	return s
 }
 
@@ -85,6 +91,15 @@ func clamp(v, lo, hi float64) float64 {
 		return lo
 	}
 	return min(max(v, lo), hi)
+}
+
+// clampPtr is clamp for a value that can be "not known" (nil).
+func clampPtr(v *float64, lo, hi float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	c := clamp(*v, lo, hi)
+	return &c
 }
 
 // truncate cuts s to at most n characters. The control plane counts
