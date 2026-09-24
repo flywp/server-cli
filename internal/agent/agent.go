@@ -31,11 +31,16 @@ type ControlPlane interface {
 	PollCommands(ctx context.Context) (*wire.CommandsReply, error)
 }
 
+// ErrNoSample is the error of a minute that has no sample, for example a
+// first minute that is too short to measure. It is not a problem.
+var ErrNoSample = errors.New("no sample for this minute")
+
 // Collector measures the server.
 type Collector interface {
 	// Read takes a reading between two ticks, for the peaks of the minute.
 	Read(now time.Time)
-	// Sample measures the minute that ends at now.
+	// Sample measures the minute that ends at now. It returns an error that
+	// wraps ErrNoSample when the minute has no sample.
 	Sample(now time.Time) (wire.Sample, error)
 	// Status describes the server now.
 	Status(ctx context.Context) wire.Status
@@ -222,9 +227,12 @@ func (a *agent) tick(ctx context.Context, now time.Time) (exit bool) {
 		// The reading has the time at which it ran; the sample has the time
 		// of its tick, for its minute on the control plane.
 		s, err := a.collector.Sample(time.Now())
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrNoSample):
+			a.log.Info("no sample for this minute", "reason", err)
+		case err != nil:
 			a.log.Warn("skipping the sample of this minute", "error", err)
-		} else {
+		default:
 			s.RecordedAt = now
 			a.outbox.addSample(cleanSample(s))
 		}

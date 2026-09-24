@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flywp/server-cli/internal/agent"
 	"github.com/flywp/server-cli/internal/agent/wire"
 )
 
@@ -83,6 +84,8 @@ func (s *server) collector(stateDir string) *Collector {
 	c.statfs = func(string) (uint64, uint64, error) { return 100 << 30, 25 << 30, nil }
 	c.release = func() string { return "6.8.0-45-generic" }
 	c.aptCheck = func(context.Context) ([]byte, error) { return []byte("33;6"), nil }
+	// The tests take the first sample some milliseconds after the start.
+	c.minFirst = 0
 	return c
 }
 
@@ -417,5 +420,65 @@ func TestNewWithCountersThatCannotBeRead(t *testing.T) {
 	}
 	if !s.NetCountersReset {
 		t.Error("net_counters_reset = false, want true after counters that cannot be read")
+	}
+}
+
+func TestAShortFirstMinuteHasNoSample(t *testing.T) {
+	srv := newServer(t)
+	c := srv.collector(t.TempDir())
+	c.minFirst = minFirstMinute
+
+	// The install ends 1 s before the tick: that second is all busy.
+	srv.cpu(1100, 800)
+	first := time.Now().Add(time.Second)
+	if _, err := c.Sample(first); !errors.Is(err, agent.ErrNoSample) {
+		t.Fatalf("Sample() 1 s after the start = %v, want ErrNoSample", err)
+	}
+
+	// The next minute is a whole minute from the tick reading, with its
+	// traffic.
+	srv.cpu(1700, 1250)
+	srv.net(map[string][2]uint64{"eth0": {1600, 800}, "eth1": {100, 50}})
+	s, err := c.Sample(first.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CPUPercent != 25 {
+		t.Errorf("cpu_percent = %v, want 25 from the tick reading, not from the start", s.CPUPercent)
+	}
+	if s.NetCountersReset || s.NetInBytes != 600 || s.NetInMaxBytesPerSecond == nil {
+		t.Errorf("net = %d, peak %v, reset %v; want 600 and a peak: the minute has a previous reading", s.NetInBytes, ptr(s.NetInMaxBytesPerSecond), s.NetCountersReset)
+	}
+}
+
+func TestALongFirstMinuteHasASample(t *testing.T) {
+	srv := newServer(t)
+	c := srv.collector(t.TempDir())
+	c.minFirst = minFirstMinute
+
+	srv.cpu(1600, 950)
+	s, err := c.Sample(time.Now().Add(20 * time.Second))
+	if err != nil {
+		t.Fatalf("Sample() 20 s after the start = %v, want a sample", err)
+	}
+	if s.CPUPercent != 75 {
+		t.Errorf("cpu_percent = %v, want 75", s.CPUPercent)
+	}
+}
+
+func TestARestartWithSavedCountersHasASample(t *testing.T) {
+	srv := newServer(t)
+	state := t.TempDir()
+	now := time.Now()
+	if _, err := srv.collector(state).Sample(now.Add(-59 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A quick restart, for example an update, 1 s before the tick: the
+	// minute continues from the saved reading.
+	c := srv.collector(state)
+	c.minFirst = minFirstMinute
+	if _, err := c.Sample(now.Add(time.Second)); err != nil {
+		t.Errorf("Sample() after a restart with saved counters = %v, want a sample", err)
 	}
 }

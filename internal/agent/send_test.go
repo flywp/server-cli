@@ -319,6 +319,25 @@ func TestARetryDoesNotWaitForTheNextInterval(t *testing.T) {
 	})
 }
 
+func TestAMinuteWithoutASampleIsNotAWarning(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		collector := &fakeCollector{err: fmt.Errorf("%w: the first minute is only 1s since the start", ErrNoSample)}
+		cp := &fakeCP{}
+		rec := runFor(t, 2*time.Minute, t.TempDir(), cp, collector)
+
+		if n := len(rec.times("skipping the sample of this minute")); n != 0 {
+			t.Errorf("%d warnings, want none for a minute without a sample", n)
+		}
+		if got := rec.recordsOf("no sample for this minute"); len(got) != 2 || got[0].Level != slog.LevelInfo {
+			t.Errorf("%d info lines, want 2", len(got))
+		}
+		// The reports still go: the status and the events are sent.
+		if len(cp.eventsAt) == 0 {
+			t.Error("no events request, want the report to run")
+		}
+	})
+}
+
 func TestTheReportTimeRunningOutIsNotAFailure(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()

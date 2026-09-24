@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/flywp/server-cli/internal/agent"
 	"github.com/flywp/server-cli/internal/agent/wire"
 	"github.com/flywp/server-cli/internal/statefile"
 )
@@ -31,6 +33,11 @@ const (
 	updatesEvery    = time.Hour
 	aptCheckPath    = "/usr/lib/update-notifier/apt-check"
 	aptCheckTimeout = 30 * time.Second
+
+	// minFirstMinute is the shortest first minute after a start. A shorter
+	// one is mostly the load of the start, for example an install: its CPU
+	// value would be a false spike.
+	minFirstMinute = 10 * time.Second
 
 	// maxReadings limits the readings between two ticks. The agent reads
 	// five times between two ticks; more readings come only when ticks fail.
@@ -64,6 +71,11 @@ type Collector struct {
 	// after it, oldest first. They give the windows of the next sample.
 	prev     *reading
 	readings []reading
+	// fromStart is true while prev is the reading of the start of this
+	// process, not a saved reading. minFirst is the shortest first minute;
+	// tests set it to 0.
+	fromStart bool
+	minFirst  time.Duration
 	// noInterface is true after the warning that no interface is counted.
 	noInterface bool
 
@@ -83,6 +95,7 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 		statfs:   statfs,
 		release:  kernelRelease,
 		aptCheck: runAptCheck,
+		minFirst: minFirstMinute,
 	}
 
 	// Take a reading now, so that the first sample has a CPU value for the
@@ -107,6 +120,7 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 		// The traffic since the start is not the traffic of one minute.
 		start.Net = nil
 		c.prev = &start
+		c.fromStart = true
 	}
 
 	return c
@@ -147,6 +161,19 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 	cur, err := c.read(now)
 	if err != nil {
 		return wire.Sample{}, err
+	}
+
+	// A tick right after the start has no minute to measure. Its reading
+	// starts the next minute, which then has all its values.
+	if c.fromStart {
+		c.fromStart = false
+		if d := cur.At.Sub(c.prev.At); d >= 0 && d < c.minFirst {
+			c.prev, c.readings = &cur, nil
+			if err := statefile.Write(c.path, cur); err != nil {
+				c.log.Warn("saving the counters", "error", err)
+			}
+			return wire.Sample{}, fmt.Errorf("%w: the first minute is only %s since the start", agent.ErrNoSample, d.Round(time.Millisecond))
+		}
 	}
 
 	c.refreshUpdates(context.Background())
