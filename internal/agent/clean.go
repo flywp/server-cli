@@ -32,7 +32,12 @@ func cleanSample(s wire.Sample) wire.Sample {
 	} {
 		*v = clampInt(*v)
 	}
-	s.CPUMaxPercent = clampPtr(s.CPUMaxPercent, 0, 100)
+	for _, v := range []**float64{
+		&s.CPUMaxPercent, &s.CPUPressurePercent, &s.CPUPressureMaxPercent, &s.MemoryPressurePercent,
+		&s.MemoryPressureMaxPercent, &s.IOPressurePercent, &s.IOPressureMaxPercent,
+	} {
+		*v = clampPtr(*v, 0, 100)
+	}
 	for _, v := range []**uint64{
 		&s.MemoryUsedMaxBytes, &s.SwapUsedMaxBytes, &s.NetInMaxBytesPerSecond, &s.NetOutMaxBytesPerSecond,
 	} {
