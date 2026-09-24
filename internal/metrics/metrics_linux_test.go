@@ -11,6 +11,8 @@ import (
 // TestRealServer measures this Linux machine: CI runs it on ubuntu-latest.
 func TestRealServer(t *testing.T) {
 	c := New("/", t.TempDir(), slog.New(slog.DiscardHandler))
+	// The sample comes right after the start: measure it anyway.
+	c.minFirst = 0
 
 	s, err := c.Sample(time.Now())
 	if err != nil {
