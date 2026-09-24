@@ -1,7 +1,8 @@
 // Package metrics measures a Linux server for the monitoring agent: CPU,
 // load, memory, swap, disk, network, pressure (PSI) and disk activity each
-// minute, with the peaks of the minute from a reading each 10 seconds, and
-// the status of the server (contract v0.4.0). It needs no root.
+// minute, with the peaks of the minute from a reading each 10 seconds, the
+// use of each site, and the status of the server (contract v0.5.0). It needs
+// no root.
 package metrics
 
 import (
@@ -66,6 +67,9 @@ type Collector struct {
 	release  func() string
 	aptCheck func(ctx context.Context) ([]byte, error)
 	docker   *dockerapi.Client
+	// home is the home folder of the server user, where the Docker Compose
+	// projects of the sites are.
+	home string
 
 	// prev is the reading of the last tick, and readings are the readings
 	// after it, oldest first. They give the windows of the next sample.
@@ -78,6 +82,11 @@ type Collector struct {
 	// dockerWarned is true after the warning that the state of Docker is
 	// not known, until it is known again.
 	dockerWarned bool
+
+	// prevContainers are the CPU times of the containers at the last tick,
+	// and walker measures the disk use of the sites.
+	prevContainers *containerReadings
+	walker         *diskWalker
 
 	updatesAt       time.Time
 	updatesKnown    bool
@@ -97,6 +106,8 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 		aptCheck: runAptCheck,
 	}
 	c.docker = dockerapi.New(c.file("var/run/docker.sock"))
+	c.home = homeDir()
+	c.walker = newDiskWalker()
 
 	// Take a reading now, so that the first sample has a CPU value for the
 	// time since the start. The saved reading comes before it only when it is
@@ -164,6 +175,10 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 		return wire.Sample{}, err
 	}
 
+	// The containers come right after the reading of the tick: their CPU
+	// times must be of the same moment.
+	sites := c.sites(context.Background(), cur)
+
 	c.refreshUpdates(context.Background())
 
 	var s wire.Sample
@@ -196,6 +211,7 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 	}
 
 	setPeaks(&s, c.prev, c.readings, cur)
+	s.Sites = sites
 
 	c.prev = &cur
 	c.readings = nil

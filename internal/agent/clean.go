@@ -19,6 +19,8 @@ const (
 	maxStatusTextLen = 255
 	maxArchLen       = 16
 	maxCPUCount      = 4096
+	maxSites         = 1000
+	maxDirectoryLen  = 255
 	maxEventNameLen  = 64
 	maxErrorLen      = 2000
 )
@@ -46,7 +48,32 @@ func cleanSample(s wire.Sample) wire.Sample {
 	} {
 		*v = clampIntPtr(*v)
 	}
+	s.Sites = cleanSites(s.Sites)
 	return s
+}
+
+// cleanSites keeps at most maxSites items. It drops an item whose directory
+// is empty or too long: a cut directory would match an other site. A nil
+// slice stays nil, and an empty slice stays empty: they mean different things.
+func cleanSites(sites []wire.Site) []wire.Site {
+	if sites == nil {
+		return nil
+	}
+
+	out := make([]wire.Site, 0, min(len(sites), maxSites))
+	for _, site := range sites {
+		if len(out) == maxSites {
+			break
+		}
+		if n := utf8.RuneCountInString(site.Directory); n == 0 || n > maxDirectoryLen {
+			continue
+		}
+		site.CPUPercent = clampPtr(site.CPUPercent, 0, 100)
+		site.MemoryUsedBytes = clampIntPtr(site.MemoryUsedBytes)
+		site.DiskUsedBytes = clampIntPtr(site.DiskUsedBytes)
+		out = append(out, site)
+	}
+	return out
 }
 
 func cleanStatus(s wire.Status) wire.Status {
