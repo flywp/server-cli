@@ -122,8 +122,22 @@ func (f *fakeCP) sampleCounts() []int {
 type fakeCollector struct {
 	mu     sync.Mutex
 	n      int
+	reads  []time.Time
 	status wire.Status
 	err    error
+}
+
+func (c *fakeCollector) Read(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reads = append(c.reads, now)
+}
+
+// readTimes returns the times of the readings between the ticks.
+func (c *fakeCollector) readTimes() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.reads)
 }
 
 func (c *fakeCollector) Sample(time.Time) (wire.Sample, error) {

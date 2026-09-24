@@ -158,6 +158,67 @@ func TestLoopTicksAtTheOffsetAndReportsEachInterval(t *testing.T) {
 	})
 }
 
+func TestNextReading(t *testing.T) {
+	base := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		now    time.Time
+		offset time.Duration
+		want   time.Time
+	}{
+		{base, 17 * time.Second, base.Add(7 * time.Second)},
+		{base.Add(7 * time.Second), 17 * time.Second, base.Add(17 * time.Second)},
+		{base.Add(18 * time.Second), 17 * time.Second, base.Add(27 * time.Second)},
+		{base.Add(58 * time.Second), 17 * time.Second, base.Add(67 * time.Second)},
+		{base.Add(59*time.Second + 999*time.Millisecond), 0, base.Add(time.Minute)},
+		{base.Add(3 * time.Second), 43 * time.Second, base.Add(3 * time.Second).Add(10 * time.Second)},
+	}
+
+	for _, tt := range tests {
+		if got := nextReading(tt.now, tt.offset); !got.Equal(tt.want) {
+			t.Errorf("nextReading(%s, %v) = %s, want %s", tt.now.Format(time.TimeOnly), tt.offset, got.Format(time.TimeOnly), tt.want.Format(time.TimeOnly))
+		}
+	}
+}
+
+func TestLoopReadsEach10SecondsBetweenTheTicks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		collector := &fakeCollector{}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error)
+		go func() {
+			done <- run(ctx, Config{ServerID: 17, StateDir: t.TempDir()}, slog.New(slog.DiscardHandler), &fakeCP{}, collector)
+		}()
+
+		time.Sleep(2 * time.Minute)
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+
+		// The ticks are at :17. The readings are at :07, :27, :37, :47 and :57:
+		// the loop never reads at a tick, because the tick takes the reading.
+		start := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		var want []time.Time
+		for s := 7 * time.Second; s < 2*time.Minute; s += 10 * time.Second {
+			if s%time.Minute != 17*time.Second {
+				want = append(want, start.Add(s))
+			}
+		}
+		got := collector.readTimes()
+		if len(got) != len(want) {
+			t.Fatalf("readings at %v, want %v", got, want)
+		}
+		for i := range want {
+			if !got[i].Equal(want[i]) {
+				t.Errorf("reading %d at %s, want %s", i, got[i].Format(time.TimeOnly), want[i].Format(time.TimeOnly))
+			}
+		}
+		if collector.n != 2 {
+			t.Errorf("%d samples, want 2 (at 0:17 and 1:17)", collector.n)
+		}
+	})
+}
+
 func TestRunRefusesASecondAgent(t *testing.T) {
 	dir := t.TempDir()
 	unlock, err := lock(dir)
