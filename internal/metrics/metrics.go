@@ -44,6 +44,8 @@ type reading struct {
 	At     time.Time              `json:"at"`
 	CPU    cpuTimes               `json:"cpu"`
 	Net    map[string]netCounters `json:"net"`
+	// PSI is nil when the kernel has no pressure information.
+	PSI *psiTotals `json:"psi,omitempty"`
 	// mem is not saved: only the readings of the minute give its peak.
 	mem memory
 }
@@ -64,8 +66,10 @@ type Collector struct {
 	// after it, oldest first. They give the windows of the next sample.
 	prev     *reading
 	readings []reading
-	// noInterface is true after the warning that no interface is counted.
+	// noInterface is true after the warning that no interface is counted,
+	// and noPSI after the warning that the kernel has no PSI.
 	noInterface bool
+	noPSI       bool
 
 	updatesAt       time.Time
 	updatesKnown    bool
@@ -104,8 +108,9 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 		c.prev = &saved
 		c.readings = []reading{start}
 	default:
-		// The traffic since the start is not the traffic of one minute.
-		start.Net = nil
+		// The traffic and the pressure since the start are not those of one
+		// minute: the first sample sends them as not known.
+		start.Net, start.PSI = nil, nil
 		c.prev = &start
 	}
 
@@ -245,7 +250,7 @@ func (c *Collector) read(now time.Time) (reading, error) {
 		return reading{}, err
 	}
 
-	return reading{BootID: string(bytes.TrimSpace(bootID)), At: now, CPU: cpu, Net: net, mem: mem}, nil
+	return reading{BootID: string(bytes.TrimSpace(bootID)), At: now, CPU: cpu, Net: net, PSI: c.readPSI(), mem: mem}, nil
 }
 
 // interfaces returns the network interfaces that have a hardware device and
