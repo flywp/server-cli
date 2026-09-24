@@ -1,7 +1,7 @@
 // Package metrics measures a Linux server for the monitoring agent: CPU,
-// load, memory, swap, disk and network each minute, with the peaks of the
-// minute from a reading each 10 seconds, and the status of the server. It
-// needs no root.
+// load, memory, swap, disk, network, pressure (PSI) and disk activity each
+// minute, with the peaks of the minute from a reading each 10 seconds, and
+// the status of the server (contract v0.4.0). It needs no root.
 package metrics
 
 import (
@@ -53,6 +53,9 @@ type reading struct {
 	Net    map[string]netCounters `json:"net"`
 	// PSI is nil when the kernel has no pressure information.
 	PSI *psiTotals `json:"psi,omitempty"`
+	// Disks is nil when /proc/diskstats cannot be read, and empty when no
+	// disk has a hardware device.
+	Disks map[string]diskCounters `json:"disks,omitempty"`
 	// mem is not saved: only the readings of the minute give its peak.
 	mem memory
 }
@@ -121,9 +124,10 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 		c.prev = &saved
 		c.readings = []reading{start}
 	default:
-		// The traffic and the pressure since the start are not those of one
-		// minute: the first sample sends them as not known.
-		start.Net, start.PSI = nil, nil
+		// The traffic, the pressure and the disk activity since the start
+		// are not those of one minute: the first sample sends them as not
+		// known.
+		start.Net, start.PSI, start.Disks = nil, nil, nil
 		c.prev = &start
 		c.fromStart = true
 	}
@@ -277,7 +281,7 @@ func (c *Collector) read(now time.Time) (reading, error) {
 		return reading{}, err
 	}
 
-	return reading{BootID: string(bytes.TrimSpace(bootID)), At: now, CPU: cpu, Net: net, PSI: c.readPSI(), mem: mem}, nil
+	return reading{BootID: string(bytes.TrimSpace(bootID)), At: now, CPU: cpu, Net: net, PSI: c.readPSI(), Disks: c.readDisks(), mem: mem}, nil
 }
 
 // interfaces returns the network interfaces that have a hardware device and

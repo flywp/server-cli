@@ -40,6 +40,8 @@ func cleanSample(s wire.Sample) wire.Sample {
 	}
 	for _, v := range []**uint64{
 		&s.MemoryUsedMaxBytes, &s.SwapUsedMaxBytes, &s.NetInMaxBytesPerSecond, &s.NetOutMaxBytesPerSecond,
+		&s.DiskReadBytes, &s.DiskWriteBytes, &s.DiskReadOps, &s.DiskWriteOps,
+		&s.DiskReadMaxBytesPerSecond, &s.DiskWriteMaxBytesPerSecond, &s.DiskReadMaxOpsPerSecond, &s.DiskWriteMaxOpsPerSecond,
 	} {
 		*v = clampIntPtr(*v)
 	}
