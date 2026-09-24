@@ -9,6 +9,15 @@ import (
 	"syscall"
 )
 
+// fileID returns the inode of a path, or 0.
+func fileID(path string) uint64 {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0
+	}
+	return uint64(st.Ino)
+}
+
 // diskUsage returns the space that the files under root take on the disk: the
 // allocated blocks, as du shows them (st_blocks × 512). It does not follow a
 // symbolic link, does not go into an other file system, and counts a file

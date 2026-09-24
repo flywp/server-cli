@@ -174,10 +174,7 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 	if err != nil {
 		return wire.Sample{}, err
 	}
-
-	// The containers come right after the reading of the tick: their CPU
-	// times must be of the same moment.
-	sites := c.sites(context.Background(), cur)
+	readAt := time.Now()
 
 	c.refreshUpdates(context.Background())
 
@@ -211,7 +208,9 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 	}
 
 	setPeaks(&s, c.prev, c.readings, cur)
-	s.Sites = sites
+	// The sites come after each step that can fail: they take the result
+	// of the disk walk, which must not go with a sample that is dropped.
+	s.Sites = c.sites(context.Background(), cur, readAt)
 
 	c.prev = &cur
 	c.readings = nil
