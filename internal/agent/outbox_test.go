@@ -242,6 +242,36 @@ func TestCleanDockerStatus(t *testing.T) {
 	}
 }
 
+func TestCleanSites(t *testing.T) {
+	if s := cleanSample(wire.Sample{}); s.Sites != nil {
+		t.Errorf("sites = %v, want nil to stay nil (not known)", s.Sites)
+	}
+	s := cleanSample(wire.Sample{Sites: []wire.Site{}})
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"sites":[]`) {
+		t.Errorf("sample JSON = %s, want an empty list to stay empty (no project)", data)
+	}
+
+	cpu, big := 250.0, uint64(math.MaxUint64)
+	many := []wire.Site{{Directory: ""}, {Directory: strings.Repeat("d", 256)}, {Directory: "example.com", CPUPercent: &cpu, MemoryUsedBytes: &big}}
+	for i := range 1200 {
+		many = append(many, wire.Site{Directory: fmt.Sprintf("site%d.com", i)})
+	}
+	s = cleanSample(wire.Sample{Sites: many})
+	if len(s.Sites) != maxSites {
+		t.Errorf("%d sites, want at most %d", len(s.Sites), maxSites)
+	}
+	if got := s.Sites[0]; got.Directory != "example.com" || *got.CPUPercent != 100 || *got.MemoryUsedBytes != math.MaxInt64 {
+		t.Errorf("first site = %+v, want example.com with its values in range, after the empty and the long directory", got)
+	}
+	if cpu != 250 {
+		t.Error("cleanSample() changed the value of the caller")
+	}
+}
+
 func TestCleanEventDropsACommandIDThatIsNotAULID(t *testing.T) {
 	if e := cleanEvent(wire.Event{CommandID: "not-a-ulid"}); e.CommandID != "" {
 		t.Errorf("command_id = %q, want it removed", e.CommandID)
