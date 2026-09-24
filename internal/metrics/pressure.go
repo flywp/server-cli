@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"slices"
+
 	"github.com/flywp/server-cli/internal/agent/wire"
 )
 
@@ -70,6 +72,8 @@ func setPressure(s *wire.Sample, prev *reading, all []reading, cur reading) {
 	}
 
 	cpuMax, memMax, ioMax := cpu, mem, io
+	// A reading without PSI is left out: its windows join.
+	all = slices.DeleteFunc(slices.Clone(all), func(r reading) bool { return r.PSI == nil })
 	for i := 1; i < len(all); i++ {
 		if c, m, o, ok := pressure(all[i-1], all[i]); ok {
 			cpuMax, memMax, ioMax = max(cpuMax, c), max(memMax, m), max(ioMax, o)
