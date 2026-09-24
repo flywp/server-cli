@@ -272,6 +272,27 @@ func TestCleanSites(t *testing.T) {
 	}
 }
 
+func TestOutboxKeepsSitesNullAndEmptyApart(t *testing.T) {
+	dir := t.TempDir()
+	o := loadOutbox(dir, slog.New(slog.DiscardHandler))
+	o.addSample(cleanSample(wire.Sample{Sites: nil}))
+	o.addSample(cleanSample(wire.Sample{Sites: []wire.Site{}}))
+
+	o = loadOutbox(dir, slog.New(slog.DiscardHandler))
+	if len(o.samples) != 2 {
+		t.Fatalf("samples = %d, want 2", len(o.samples))
+	}
+	for i, want := range []string{`"sites":null`, `"sites":[]`} {
+		data, err := json.Marshal(o.samples[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), want) {
+			t.Errorf("sample %d JSON = %s, want %s after the queue on disk", i, data, want)
+		}
+	}
+}
+
 func TestCleanEventDropsACommandIDThatIsNotAULID(t *testing.T) {
 	if e := cleanEvent(wire.Event{CommandID: "not-a-ulid"}); e.CommandID != "" {
 		t.Errorf("command_id = %q, want it removed", e.CommandID)

@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -269,6 +270,109 @@ func TestSitesDiskWalkThatFails(t *testing.T) {
 	}
 	if s.Sites[0].DiskUsedBytes != nil {
 		t.Errorf("disk = %d, want null after a walk that stopped", *s.Sites[0].DiskUsedBytes)
+	}
+}
+
+func TestSitesLeaveOutAContainerThatRestartedWithTheSameID(t *testing.T) {
+	srv := newServer(t)
+	srv.cgroup("a1", 1000000, 1, 0)
+	c := sitesCollector(t, srv, []fakeContainer{{"a1", srv.home("example.com")}})
+	base := time.Now().Add(time.Second)
+	if _, err := c.Sample(base); err != nil {
+		t.Fatal(err)
+	}
+
+	// docker restart keeps the id, but makes a new cgroup whose CPU time
+	// starts again. The new run already used more than the old one.
+	scope := filepath.Join(srv.root, "sys/fs/cgroup/system.slice/docker-a1.scope")
+	if err := os.Rename(scope, scope+".old"); err != nil {
+		t.Fatal(err)
+	}
+	srv.cgroup("a1", 1600000, 1, 0)
+
+	s, err := c.Sample(base.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Sites[0].CPUPercent != nil {
+		t.Errorf("cpu = %v, want null: the container restarted in the minute", *s.Sites[0].CPUPercent)
+	}
+}
+
+func TestSitesWithTheRootAsHome(t *testing.T) {
+	srv := newServer(t)
+	srv.cgroup("a1", 1, 1, 0)
+	c := sitesCollector(t, srv, []fakeContainer{{"a1", "/"}, {"a2", "/srv"}})
+	c.home = "/"
+	s, err := c.Sample(time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Sites != nil {
+		t.Errorf("sites = %+v, want null: with / as the home, no folder is a site", s.Sites)
+	}
+}
+
+func TestSitesDiskResultSurvivesASampleThatFails(t *testing.T) {
+	srv := newServer(t)
+	srv.cgroup("a1", 1, 1, 0)
+	c := sitesCollector(t, srv, []fakeContainer{{"a1", srv.home("example.com")}})
+	base := time.Now().Add(time.Second)
+	if _, err := c.Sample(base); err != nil {
+		t.Fatal(err)
+	}
+	waitWalk(t, c)
+
+	// The tick that would carry the disk use fails.
+	statfs := c.statfs
+	c.statfs = func(string) (uint64, uint64, error) { return 0, 0, errors.New("statfs failed") }
+	if _, err := c.Sample(base.Add(time.Minute)); err == nil {
+		t.Fatal("Sample() = nil error, want the statfs error")
+	}
+	c.statfs = statfs
+
+	s, err := c.Sample(base.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := s.Sites[0].DiskUsedBytes; d == nil || *d != 4096 {
+		t.Errorf("disk = %v, want 4096 in the next sample that goes", ptr(d))
+	}
+}
+
+func TestSitesDiskWalkThatHangs(t *testing.T) {
+	srv := newServer(t)
+	srv.cgroup("a1", 1, 1, 0)
+	srv.cgroup("b1", 1, 1, 0)
+	c := sitesCollector(t, srv, []fakeContainer{{"a1", srv.home("a.com")}, {"b1", srv.home("b.com")}})
+	// The walk of a.com hangs in a system call and does not see its
+	// context. The walk of b.com works.
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	c.walker.timeout = 50 * time.Millisecond
+	c.walker.walk = func(_ context.Context, root string) (uint64, int, error) {
+		if strings.HasSuffix(root, "a.com") {
+			<-hang
+		}
+		return 4096, 0, nil
+	}
+
+	if _, err := c.Sample(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitWalk(t, c)
+	s, err := c.Sample(time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Sites[0].DiskUsedBytes != nil || s.Sites[1].DiskUsedBytes == nil {
+		t.Errorf("disk = %v, %v; want null for a.com and 4096 for b.com", ptr(s.Sites[0].DiskUsedBytes), ptr(s.Sites[1].DiskUsedBytes))
+	}
+	c.walker.mu.Lock()
+	running := c.walker.running
+	c.walker.mu.Unlock()
+	if running {
+		t.Error("the walk still runs: a walk that hangs must not stop the next walks")
 	}
 }
 

@@ -29,9 +29,12 @@ const (
 )
 
 // containerUsage is the CPU time of one container, in microseconds, at a tick.
+// cgroup identifies the cgroup folder of the container: a restart keeps the
+// id of the container, but makes a new cgroup whose CPU time starts again.
 type containerUsage struct {
 	project string
 	usec    uint64
+	cgroup  uint64
 }
 
 // containerReadings are the CPU times of the containers at one tick.
@@ -54,12 +57,14 @@ func homeDir() string {
 }
 
 // sites measures each Docker Compose project in the home folder at the tick
-// cur (contract v0.5.0). It returns nil when the agent cannot read Docker or
+// cur, read at readAt (contract v0.5.0). It returns nil when the agent cannot read Docker or
 // the cgroups: Docker does not run, the socket refuses the agent, or the
 // server has cgroup v1. It returns an empty, non-nil slice when no project
 // matches.
-func (c *Collector) sites(ctx context.Context, cur reading) []wire.Site {
-	if c.home == "" {
+func (c *Collector) sites(ctx context.Context, cur reading, readAt time.Time) []wire.Site {
+	// Without a home folder, or with "/" as the home, no folder is a project
+	// of a site.
+	if c.home == "" || filepath.Dir(c.home) == c.home {
 		return nil
 	}
 	if _, err := os.Stat(c.file("sys/fs/cgroup/cgroup.controllers")); err != nil {
@@ -79,9 +84,13 @@ func (c *Collector) sites(ctx context.Context, cur reading) []wire.Site {
 		memOK   bool
 	}
 	projects := map[string]*project{}
-	now := containerReadings{bootID: cur.BootID, at: cur.At, usage: map[string]containerUsage{}}
+	// The CPU times are read now, some time after the tick reading: the
+	// request to Docker and apt-check come before. The time of the minute
+	// is the time between two such reads.
+	at := cur.At.Add(time.Since(readAt))
+	now := containerReadings{bootID: cur.BootID, at: at, usage: map[string]containerUsage{}}
 	prev := c.prevContainers
-	usable := prev != nil && prev.bootID == cur.BootID && cur.At.After(prev.at) && cur.At.Sub(prev.at) <= maxAge
+	usable := prev != nil && prev.bootID == cur.BootID && at.After(prev.at) && at.Sub(prev.at) <= maxAge
 
 	for _, ct := range containers {
 		dir := filepath.Clean(ct.Labels[workingDirLabel])
@@ -100,10 +109,12 @@ func (c *Collector) sites(ctx context.Context, cur reading) []wire.Site {
 			continue
 		}
 		if usec, err := parseFile(c, filepath.Join(cg, "cpu.stat"), parseCPUStat); err == nil {
-			now.usage[ct.ID] = containerUsage{project: name, usec: usec}
-			// Only a container that both ticks saw, with the same id: a
-			// container that started or restarted in the minute is left out.
-			if old, ok := prev.lookup(ct.ID); usable && ok && old.project == name && usec >= old.usec {
+			id := fileID(c.file(cg))
+			now.usage[ct.ID] = containerUsage{project: name, usec: usec, cgroup: id}
+			// Only a container that both ticks saw, with the same id and
+			// the same cgroup: a container that started or restarted in
+			// the minute is left out.
+			if old, ok := prev.lookup(ct.ID); usable && ok && old.project == name && old.cgroup == id && usec >= old.usec {
 				p.cpuUsec += usec - old.usec
 				p.cpuOK = true
 			}
@@ -128,7 +139,7 @@ func (c *Collector) sites(ctx context.Context, cur reading) []wire.Site {
 		p := projects[name]
 		site := wire.Site{Directory: name}
 		if p.cpuOK && cpuErr == nil {
-			us := float64(cur.At.Sub(prev.at).Microseconds()) * float64(cpus)
+			us := float64(at.Sub(prev.at).Microseconds()) * float64(cpus)
 			v := min(float64(p.cpuUsec)/us*100, 100)
 			site.CPUPercent = &v
 		}
@@ -226,12 +237,13 @@ type diskWalker struct {
 	results map[string]uint64 // by directory, not yet sent
 	// done is closed when the running walk ends. Tests wait for it.
 	done chan struct{}
-	// walk measures one folder. Tests replace it.
-	walk func(ctx context.Context, root string) (uint64, int, error)
+	// walk measures one folder, and timeout limits it. Tests replace them.
+	walk    func(ctx context.Context, root string) (uint64, int, error)
+	timeout time.Duration
 }
 
 func newDiskWalker() *diskWalker {
-	return &diskWalker{walk: diskUsage}
+	return &diskWalker{walk: diskUsage, timeout: sitesDiskTimeout}
 }
 
 // start begins a walk of the folders, by directory, when no walk runs and the
@@ -250,10 +262,6 @@ func (w *diskWalker) start(folders map[string]string, log interface {
 
 	go func() {
 		defer close(done)
-		// The walk runs at the lowest I/O priority, so that it does not
-		// slow the sites. The priority is a property of the thread: the
-		// thread stays locked, and ends with the goroutine.
-		lowerIOPriority()
 
 		results := map[string]uint64{}
 		for _, name := range slices.Sorted(func(yield func(string) bool) {
@@ -263,9 +271,7 @@ func (w *diskWalker) start(folders map[string]string, log interface {
 				}
 			}
 		}) {
-			ctx, cancel := context.WithTimeout(context.Background(), sitesDiskTimeout)
-			used, skipped, err := w.walk(ctx, folders[name])
-			cancel()
+			used, skipped, err := w.walkOne(folders[name])
 			if err != nil {
 				log.Warn("cannot measure the disk use of a site; sending null", "directory", name, "error", err)
 				continue
@@ -280,6 +286,37 @@ func (w *diskWalker) start(folders map[string]string, log interface {
 		defer w.mu.Unlock()
 		w.results, w.running = results, false
 	}()
+}
+
+// walkOne measures one folder in a goroutine of its own, and stops waiting
+// for it after the timeout. A walk that hangs in a system call, for example on
+// a network mount that does not answer, stays behind; the other folders and
+// the next walks go on.
+func (w *diskWalker) walkOne(root string) (uint64, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
+	defer cancel()
+
+	type result struct {
+		used    uint64
+		skipped int
+		err     error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		// The walk runs at the lowest I/O priority, so that it does not
+		// slow the sites. The priority is a property of the thread: the
+		// thread stays locked, and ends with the goroutine.
+		lowerIOPriority()
+		used, skipped, err := w.walk(ctx, root)
+		ch <- result{used, skipped, err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.used, r.skipped, r.err
+	case <-ctx.Done():
+		return 0, 0, ctx.Err()
+	}
 }
 
 // take returns the results of the last walk that ended, one time.

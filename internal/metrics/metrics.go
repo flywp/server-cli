@@ -188,6 +188,7 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 	if err != nil {
 		return wire.Sample{}, err
 	}
+	readAt := time.Now()
 
 	// A tick right after the start has no minute to measure. Its reading
 	// starts the next minute, which then has all its values.
@@ -201,10 +202,6 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 			return wire.Sample{}, fmt.Errorf("%w: the first minute is only %s since the start", agent.ErrNoSample, d.Round(time.Millisecond))
 		}
 	}
-
-	// The containers come right after the reading of the tick: their CPU
-	// times must be of the same moment.
-	sites := c.sites(context.Background(), cur)
 
 	c.refreshUpdates(context.Background())
 
@@ -238,7 +235,9 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 	}
 
 	setPeaks(&s, c.prev, c.readings, cur)
-	s.Sites = sites
+	// The sites come after each step that can fail: they take the result
+	// of the disk walk, which must not go with a sample that is dropped.
+	s.Sites = c.sites(context.Background(), cur, readAt)
 
 	c.prev = &cur
 	c.readings = nil
