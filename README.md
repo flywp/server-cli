@@ -152,6 +152,8 @@ git push origin v0.2.0
 
 The Release workflow checks that the tag is on `main`, runs `make check`, builds the archives with `make release`, and creates the GitHub release with both archives and `checksums.txt`. A tag with a pre-release suffix, such as `v0.2.0-rc.1`, becomes a pre-release, so installed CLIs do not update to it.
 
+`install.sh` and `fly update` install only a release that has `checksums.txt`. Releases before v0.2.0 have none, so push the tag right after the merge into `main`: until the release is published, `install.sh` from `main` stops.
+
 ### Dev pre-releases
 
 To test a branch on real servers before it merges, publish a dev pre-release of its current commit:
