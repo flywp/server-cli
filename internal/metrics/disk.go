@@ -64,8 +64,8 @@ func diskDelta(a, b reading) (d diskCounters, ok bool) {
 
 // setDiskActivity sets the disk activity of the minute from prev to cur in s,
 // and the peaks of the windows in all. The eight fields stay nil when the
-// activity of the minute is not known. The peaks also stay nil when a window
-// has a counter that went back.
+// activity of the minute is not known, or when a window has a counter that
+// went back: then the delta of the minute is not the real activity either.
 func setDiskActivity(s *wire.Sample, prev *reading, all []reading, cur reading) {
 	if prev == nil {
 		return
@@ -75,13 +75,11 @@ func setDiskActivity(s *wire.Sample, prev *reading, all []reading, cur reading) 
 		return
 	}
 	readBytes, writeBytes := d.ReadSectors*sectorSize, d.WriteSectors*sectorSize
-	s.DiskReadBytes, s.DiskWriteBytes = &readBytes, &writeBytes
-	s.DiskReadOps, s.DiskWriteOps = &d.ReadOps, &d.WriteOps
 
 	// The control plane reads the value of the minute as the value / 60.
 	peak := [4]uint64{readBytes / 60, writeBytes / 60, d.ReadOps / 60, d.WriteOps / 60}
-	// A reading whose disks were not read is left out: its windows join.
-	all = slices.DeleteFunc(slices.Clone(all), func(r reading) bool { return r.Disks == nil })
+	// A reading without disks is left out: its windows join.
+	all = slices.DeleteFunc(slices.Clone(all), func(r reading) bool { return len(r.Disks) == 0 })
 	for i := 1; i < len(all); i++ {
 		a, b := all[i-1], all[i]
 		w, ok := diskDelta(a, b)
@@ -93,6 +91,9 @@ func setDiskActivity(s *wire.Sample, prev *reading, all []reading, cur reading) 
 			peak[j] = max(peak[j], uint64(float64(v)/secs))
 		}
 	}
+
+	s.DiskReadBytes, s.DiskWriteBytes = &readBytes, &writeBytes
+	s.DiskReadOps, s.DiskWriteOps = &d.ReadOps, &d.WriteOps
 	s.DiskReadMaxBytesPerSecond, s.DiskWriteMaxBytesPerSecond = &peak[0], &peak[1]
 	s.DiskReadMaxOpsPerSecond, s.DiskWriteMaxOpsPerSecond = &peak[2], &peak[3]
 }
