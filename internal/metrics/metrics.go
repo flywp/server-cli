@@ -257,14 +257,18 @@ func (c *Collector) Status(context.Context) wire.Status {
 		c.log.Warn("reading the uptime", "error", err)
 	}
 
-	s.UpdatesTotal, s.UpdatesSecurity = c.updatesTotal, c.updatesSecurity
+	// Without any count, the counts are not known: null, not a false 0.
+	if c.updatesKnown {
+		total, security := c.updatesTotal, c.updatesSecurity
+		s.UpdatesTotal, s.UpdatesSecurity = &total, &security
+	}
 
 	return s
 }
 
 // refreshUpdates counts the waiting updates at the first call and then each
-// hour. If apt-check fails, the last counts stay. Without any count, they are
-// 0: the contract has no value for "not known" yet.
+// hour. If apt-check fails, the last counts stay. Without any count, Status
+// sends null (contract v0.3.1).
 func (c *Collector) refreshUpdates(ctx context.Context) {
 	if !c.updatesAt.IsZero() && time.Since(c.updatesAt) < updatesEvery {
 		return
@@ -283,7 +287,7 @@ func (c *Collector) refreshUpdates(ctx context.Context) {
 		if c.updatesKnown {
 			c.log.Warn("cannot count the waiting updates; keeping the last counts", "error", err)
 		} else {
-			c.log.Warn("cannot count the waiting updates; sending 0", "error", err)
+			c.log.Warn("cannot count the waiting updates; sending null", "error", err)
 		}
 		return
 	}

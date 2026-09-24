@@ -18,13 +18,15 @@ type MetricsRequest struct {
 // Status describes the server now. The control plane replaces the stored
 // status with it, so the agent always sends all fields.
 type Status struct {
-	RebootRequired  bool   `json:"reboot_required"`
-	UpdatesTotal    uint64 `json:"updates_total"`
-	UpdatesSecurity uint64 `json:"updates_security"`
-	OS              string `json:"os"`
-	Kernel          string `json:"kernel"`
-	UptimeSeconds   uint64 `json:"uptime_seconds"`
-	Arch            string `json:"arch"`
+	RebootRequired bool `json:"reboot_required"`
+	// The waiting updates. nil (JSON null) means "not known", for example
+	// without apt-check (contract v0.3.0). A 0 is a real 0.
+	UpdatesTotal    *uint64 `json:"updates_total"`
+	UpdatesSecurity *uint64 `json:"updates_security"`
+	OS              string  `json:"os"`
+	Kernel          string  `json:"kernel"`
+	UptimeSeconds   uint64  `json:"uptime_seconds"`
+	Arch            string  `json:"arch"`
 }
 
 // Sample holds the measurements of one minute.

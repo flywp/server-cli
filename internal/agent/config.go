@@ -1,6 +1,6 @@
 // Package agent is the FlyWP monitoring agent: the long-running mode of fly
 // that "fly agent run" starts. It follows the FlyWP monitoring agent
-// contract v0.2.1.
+// contract v0.3.1.
 package agent
 
 import (
@@ -15,12 +15,14 @@ import (
 )
 
 // The environment keys that the FlyWP installer writes to /etc/fly/agent.env,
-// and the key that systemd sets for StateDirectory=.
+// and the key that systemd sets for StateDirectory=. EnvAutoUpdate is
+// optional: a person adds it to stop the updates by release on one server.
 const (
-	EnvURL      = "FLY_AGENT_URL"
-	EnvToken    = "FLY_AGENT_TOKEN"
-	EnvServerID = "FLY_AGENT_SERVER_ID"
-	EnvStateDir = "STATE_DIRECTORY"
+	EnvURL        = "FLY_AGENT_URL"
+	EnvToken      = "FLY_AGENT_TOKEN"
+	EnvServerID   = "FLY_AGENT_SERVER_ID"
+	EnvStateDir   = "STATE_DIRECTORY"
+	EnvAutoUpdate = "FLY_AGENT_AUTO_UPDATE"
 )
 
 // Config is the configuration of the agent.
@@ -36,6 +38,12 @@ type Config struct {
 	ServerID int64
 	// StateDir keeps the files that must survive a restart.
 	StateDir string
+	// AutoUpdate lets the agent install a new signed release by itself, one
+	// time each day. The command agent.update works in both cases.
+	AutoUpdate bool
+	// Warnings are the problems of optional keys. They do not stop the
+	// agent: the agent writes them to its log at start.
+	Warnings []string
 }
 
 // Offset is the time after each full minute at which the agent works. It
@@ -81,7 +89,27 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	cfg.StateDir = dir
 
+	// A typo in an optional key must not stop the metrics.
+	on, ok := parseSwitch(getenv(EnvAutoUpdate))
+	if !ok {
+		cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("%s=%q is not on or off; auto-update stays on", EnvAutoUpdate, getenv(EnvAutoUpdate)))
+	}
+	cfg.AutoUpdate = on
+
 	return cfg, errors.Join(errs...)
+}
+
+// parseSwitch reads an optional on or off value. An empty value is on. ok is
+// false for a value that is not known; that value is also on.
+func parseSwitch(v string) (on, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "on", "true", "1", "yes":
+		return true, true
+	case "off", "false", "0", "no":
+		return false, true
+	default:
+		return true, false
+	}
 }
 
 // parseURL accepts an https URL. It also accepts http for a loopback host,

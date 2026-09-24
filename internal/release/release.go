@@ -6,6 +6,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,6 +72,13 @@ func CheckForUpdates(ctx context.Context) (*Update, error) {
 // commits since the tag, the commit hash and "-dirty" for local changes.
 var describeSuffix = regexp.MustCompile(`(-\d+-g[0-9a-f]+)?(-dirty)?$`)
 
+// IsLocalBuild reports whether v comes from git describe on a commit that is
+// not a release tag, for example v0.2.0-3-gabcdef1 or v0.2.0-dirty. Such a
+// build has code that no release has, so it must not update by itself.
+func IsLocalBuild(v string) bool {
+	return describeSuffix.FindString(v) != ""
+}
+
 // isNewer reports whether the release version latest is newer than current.
 // comparable is false when current is not built from a release tag.
 func isNewer(latest, current string) (newer, comparable bool) {
@@ -90,8 +98,10 @@ func LatestRelease(ctx context.Context) (*GithubRelease, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// The agent reads this each day without a person: a huge reply must not
+	// use all of its memory.
 	var release GithubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAssetSize)).Decode(&release); err != nil {
 		return nil, fmt.Errorf("reading release information: %w", err)
 	}
 
@@ -179,22 +189,86 @@ func selfUpdate(ctx context.Context, release *GithubRelease, exe, goos, goarch s
 // checksum returns the sha256 of the release file name from the checksum
 // file of the release.
 func checksum(ctx context.Context, release *GithubRelease, name string) (string, error) {
-	url := asset(release, ChecksumsAsset)
+	data, err := fetchAsset(ctx, release, ChecksumsAsset)
+	if err != nil {
+		return "", err
+	}
+
+	return parseChecksums(data, release.TagName, name)
+}
+
+// ErrNotSigned is the error of SignedChecksum for a release without a
+// signature file: the maintainer did not sign it yet.
+var ErrNotSigned = errors.New("the release has no signature")
+
+// Signed is a release archive whose sha256 comes from a signed checksum file.
+type Signed struct {
+	URL      string
+	SHA256   string
+	SignedAt time.Time
+}
+
+// SignedChecksum returns the archive of release for goos and goarch, with its
+// sha256 from the checksum file, after it checks the signature of that file
+// with keys. The sum comes from the same bytes that the signature covers.
+func SignedChecksum(ctx context.Context, release *GithubRelease, goos, goarch string, keys map[string]ed25519.PublicKey, now time.Time) (*Signed, error) {
+	archiveURL := assetURL(release, goos, goarch)
+	if archiveURL == "" {
+		return nil, fmt.Errorf("release %s has no binary for %s/%s", release.TagName, goos, goarch)
+	}
+	if asset(release, SignatureAsset) == "" {
+		return nil, ErrNotSigned
+	}
+
+	sigFile, err := fetchAsset(ctx, release, SignatureAsset)
+	if err != nil {
+		return nil, err
+	}
+	data, err := fetchAsset(ctx, release, ChecksumsAsset)
+	if err != nil {
+		return nil, err
+	}
+
+	sig, err := Verify(sigFile, data, release.TagName, keys, now)
+	if err != nil {
+		return nil, err
+	}
+	sum, err := parseChecksums(data, release.TagName, BinaryName(goos, goarch)+".tar.gz")
+	if err != nil {
+		return nil, err
+	}
+
+	return &Signed{URL: archiveURL, SHA256: sum, SignedAt: sig.SignedAt}, nil
+}
+
+// maxAssetSize limits a small release file: the checksum file and its
+// signature.
+const maxAssetSize = 1 << 20
+
+// fetchAsset downloads the small release file name.
+func fetchAsset(ctx context.Context, release *GithubRelease, name string) ([]byte, error) {
+	url := asset(release, name)
 	if url == "" {
-		return "", fmt.Errorf("release %s has no %s, so its download cannot be checked", release.TagName, ChecksumsAsset)
+		return nil, fmt.Errorf("release %s has no %s, so its download cannot be checked", release.TagName, name)
 	}
 
 	resp, err := get(ctx, url)
 	if err != nil {
-		return "", fmt.Errorf("downloading %s: %w", ChecksumsAsset, err)
+		return nil, fmt.Errorf("downloading %s: %w", name, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAssetSize))
 	if err != nil {
-		return "", fmt.Errorf("downloading %s: %w", ChecksumsAsset, err)
+		return nil, fmt.Errorf("downloading %s: %w", name, err)
 	}
 
+	return data, nil
+}
+
+// parseChecksums returns the sha256 of the file name from the checksum file
+// data of the release tag.
+func parseChecksums(data []byte, tag, name string) (string, error) {
 	// install.sh reads the file with the same rules. Two different sums for
 	// one file make the file not valid: it is not clear which one is correct.
 	var sum string
@@ -205,12 +279,12 @@ func checksum(ctx context.Context, release *GithubRelease, name string) (string,
 			continue
 		}
 		if sum != "" && !strings.EqualFold(sum, fields[0]) {
-			return "", fmt.Errorf("%s of release %s has two different sums for %s", ChecksumsAsset, release.TagName, name)
+			return "", fmt.Errorf("%s of release %s has two different sums for %s", ChecksumsAsset, tag, name)
 		}
 		sum = fields[0]
 	}
 	if sum == "" {
-		return "", fmt.Errorf("%s of release %s has no line for %s", ChecksumsAsset, release.TagName, name)
+		return "", fmt.Errorf("%s of release %s has no line for %s", ChecksumsAsset, tag, name)
 	}
 
 	return sum, nil
