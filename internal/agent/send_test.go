@@ -331,7 +331,7 @@ func TestAMinuteWithoutASampleIsNotAWarning(t *testing.T) {
 		if got := rec.recordsOf("no sample for this minute"); len(got) != 2 || got[0].Level != slog.LevelInfo {
 			t.Errorf("%d info lines, want 2", len(got))
 		}
-		// The reports still go: the status and the events are sent.
+		// The reports still go: the events are sent.
 		if len(cp.eventsAt) == 0 {
 			t.Error("no events request, want the report to run")
 		}
