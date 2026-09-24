@@ -169,3 +169,29 @@ func checkNoPressure(t *testing.T, s wire.Sample) {
 func near(a, b float64) bool {
 	return a > b-0.001 && a < b+0.001
 }
+
+func TestAReadingWithoutPressureJoinsTheWindows(t *testing.T) {
+	srv := newServer(t)
+	srv.psi(0, 0, 0)
+	c := srv.collector(t.TempDir())
+	base := time.Now().Add(time.Second)
+	if _, err := c.Sample(base); err != nil {
+		t.Fatal(err)
+	}
+
+	// The CPU waits 8 s from 0 s to 20 s, but the reading at 10 s has no
+	// PSI: the peak is 8 s of the joined window of 20 s.
+	srv.write("proc/pressure/cpu", "")
+	c.Read(base.Add(10 * time.Second))
+	srv.psi(8000000, 0, 0)
+	c.Read(base.Add(20 * time.Second))
+	srv.psi(9200000, 0, 0)
+
+	s, err := c.Sample(base.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CPUPressureMaxPercent == nil || !near(*s.CPUPressureMaxPercent, 40) {
+		t.Errorf("cpu_pressure_max_percent = %v, want 40 from the joined window of 0 s to 20 s", ptr(s.CPUPressureMaxPercent))
+	}
+}
