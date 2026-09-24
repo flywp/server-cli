@@ -70,10 +70,15 @@ func setPeaks(s *wire.Sample, prev *reading, readings []reading, cur reading) {
 }
 
 // cpuPeak returns the busy share of the busiest window. A window across a
-// reboot, or with counters that went back, is left out.
+// reboot, with counters that went back, or of an older minute whose tick
+// failed, is left out.
 func cpuPeak(all []reading) (peak float64, ok bool) {
+	cur := all[len(all)-1]
 	for i := 1; i < len(all); i++ {
 		a, b := all[i-1], all[i]
+		if cur.At.Sub(b.At) >= time.Minute {
+			continue
+		}
 		if a.BootID != b.BootID || b.CPU.Total <= a.CPU.Total || b.CPU.Idle < a.CPU.Idle {
 			continue
 		}

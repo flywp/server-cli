@@ -247,6 +247,36 @@ func TestLoopReadsEach10SecondsBetweenTheTicks(t *testing.T) {
 	})
 }
 
+func TestASlowReadingDoesNotSkipTheTick(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// Each reading takes 10 s: the reading at :07 ends at the tick.
+		collector := &fakeCollector{readTime: 10 * time.Second}
+		rec := &recorder{}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error)
+		go func() {
+			done <- run(ctx, Config{ServerID: 17, StateDir: t.TempDir()}, slog.New(rec), &fakeCP{}, collector)
+		}()
+
+		time.Sleep(2*time.Minute + 30*time.Second)
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+
+		start := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		ticks := rec.times("tick")
+		if len(ticks) != 3 {
+			t.Fatalf("ticks at %v, want 3 ticks", ticks)
+		}
+		for i, got := range ticks {
+			if want := start.Add(time.Duration(i)*time.Minute + 17*time.Second); !got.Equal(want) {
+				t.Errorf("tick %d at %s, want %s", i, got.Format(time.TimeOnly), want.Format(time.TimeOnly))
+			}
+		}
+	})
+}
+
 func TestRunRefusesASecondAgent(t *testing.T) {
 	dir := t.TempDir()
 	unlock, err := lock(dir)

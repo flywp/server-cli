@@ -266,6 +266,39 @@ func TestMemoryPeakAfterAFailedTickIsFromTheLastMinute(t *testing.T) {
 	}
 }
 
+func TestCPUPeakAfterAFailedTickIsFromTheLastMinute(t *testing.T) {
+	srv := newServer(t)
+	c := srv.collector(t.TempDir())
+	base := time.Now().Add(time.Second)
+
+	srv.set(step{1000, 800, 0, 0, 6000000, 1500000})
+	if _, err := c.Sample(base); err != nil {
+		t.Fatal(err)
+	}
+	// 100% busy from 0 s to 10 s. The tick at 60 s fails.
+	srv.set(step{1100, 800, 0, 0, 6000000, 1500000})
+	c.Read(base.Add(10 * time.Second))
+	if err := os.Remove(filepath.Join(srv.root, "proc/meminfo")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Sample(base.Add(time.Minute)); err == nil {
+		t.Fatal("Sample() = nil error, want the error of the tick")
+	}
+
+	// The next minute is idle.
+	srv.set(step{1100, 800, 0, 0, 6000000, 1500000})
+	c.Read(base.Add(70 * time.Second))
+	srv.set(step{1200, 900, 0, 0, 6000000, 1500000})
+	s, err := c.Sample(base.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CPUMaxPercent == nil || *s.CPUMaxPercent >= 100 {
+		t.Errorf("cpu_max_percent = %v, want the peak of the last minute, not the 100%% of the minute before", ptr(s.CPUMaxPercent))
+	}
+	checkOrder(t, s)
+}
+
 func TestReadingsAreLimited(t *testing.T) {
 	srv := newServer(t)
 	c := srv.collector(t.TempDir())
