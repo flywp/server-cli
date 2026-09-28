@@ -27,7 +27,21 @@ type Status struct {
 	Kernel          string  `json:"kernel"`
 	UptimeSeconds   uint64  `json:"uptime_seconds"`
 	Arch            string  `json:"arch"`
+
+	// CPUCount is the number of CPUs that are online. DockerStatus is one of
+	// the Docker* values, and DockerVersion is set only when Docker runs
+	// (contract v0.5.0). nil (JSON null) means "not known".
+	CPUCount      *int    `json:"cpu_count"`
+	DockerStatus  *string `json:"docker_status"`
+	DockerVersion *string `json:"docker_version"`
 }
+
+// The values of Status.DockerStatus.
+const (
+	DockerRunning      = "running"
+	DockerNotRunning   = "not_running"
+	DockerNotInstalled = "not_installed"
+)
 
 // Sample holds the measurements of one minute.
 type Sample struct {

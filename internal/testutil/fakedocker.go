@@ -1,5 +1,6 @@
 // Package testutil provides helpers for tests that run fly against a fake
-// docker command instead of a real Docker installation.
+// docker command or a fake Docker Engine API instead of a real Docker
+// installation.
 package testutil
 
 import (

@@ -20,6 +20,7 @@ import (
 
 	"github.com/flywp/server-cli/internal/agent"
 	"github.com/flywp/server-cli/internal/agent/wire"
+	"github.com/flywp/server-cli/internal/dockerapi"
 	"github.com/flywp/server-cli/internal/statefile"
 )
 
@@ -71,6 +72,7 @@ type Collector struct {
 	statfs   func(path string) (total, used uint64, err error)
 	release  func() string
 	aptCheck func(ctx context.Context) ([]byte, error)
+	docker   *dockerapi.Client
 
 	// prev is the reading of the last tick, and readings are the readings
 	// after it, oldest first. They give the windows of the next sample.
@@ -85,6 +87,9 @@ type Collector struct {
 	// and noPSI after the warning that the kernel has no PSI.
 	noInterface bool
 	noPSI       bool
+	// dockerWarned is true after the warning that the state of Docker is
+	// not known, until it is known again.
+	dockerWarned bool
 
 	updatesAt       time.Time
 	updatesKnown    bool
@@ -104,6 +109,7 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 		aptCheck: runAptCheck,
 		minFirst: minFirstMinute,
 	}
+	c.docker = dockerapi.New(c.file("var/run/docker.sock"))
 
 	// Take a reading now, so that the first sample has a CPU value for the
 	// time since the start. The saved reading comes before it only when it is
@@ -319,10 +325,10 @@ func (c *Collector) interfaces(all map[string]netCounters) []string {
 	return nil
 }
 
-// Status describes the server now. A value that cannot be read stays empty
-// or 0, and the problem goes to the log. The update counts come from the last
-// Sample.
-func (c *Collector) Status(context.Context) wire.Status {
+// Status describes the server now. A value that cannot be read stays empty,
+// 0 or nil, and the problem goes to the log. The update counts come from the
+// last Sample.
+func (c *Collector) Status(ctx context.Context) wire.Status {
 	s := wire.Status{Arch: runtime.GOARCH, Kernel: c.release()}
 
 	if _, err := os.Stat(c.file("var/run/reboot-required")); err == nil {
@@ -340,6 +346,14 @@ func (c *Collector) Status(context.Context) wire.Status {
 	} else {
 		c.log.Warn("reading the uptime", "error", err)
 	}
+
+	if n, err := parseFile(c, "proc/stat", parseCPUCount); err == nil {
+		s.CPUCount = &n
+	} else {
+		c.log.Warn("counting the CPUs", "error", err)
+	}
+
+	s.DockerStatus, s.DockerVersion = c.dockerStatus(ctx)
 
 	// Without any count, the counts are not known: null, not a false 0.
 	if c.updatesKnown {

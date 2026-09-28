@@ -213,6 +213,35 @@ func TestQueuedSampleOfAnOlderAgentSendsNullPeaks(t *testing.T) {
 	}
 }
 
+func TestCleanDockerStatus(t *testing.T) {
+	zero, many, four := 0, 5000, 4
+	status, version := "paused", strings.Repeat("9", 40)
+	s := cleanStatus(wire.Status{CPUCount: &zero, DockerStatus: &status, DockerVersion: &version})
+	if s.CPUCount != nil || s.DockerStatus != nil || s.DockerVersion == nil || len(*s.DockerVersion) != maxVersionLen {
+		t.Errorf("cleanStatus() = %v, %v, %v; want null, null and %d characters", s.CPUCount, s.DockerStatus, s.DockerVersion, maxVersionLen)
+	}
+	if s := cleanStatus(wire.Status{CPUCount: &many}); s.CPUCount != nil {
+		t.Errorf("cpu_count = %d, want null above %d", *s.CPUCount, maxCPUCount)
+	}
+
+	running := wire.DockerRunning
+	s = cleanStatus(wire.Status{CPUCount: &four, DockerStatus: &running})
+	if s.CPUCount == nil || *s.CPUCount != 4 || s.DockerStatus == nil || *s.DockerStatus != wire.DockerRunning {
+		t.Errorf("cleanStatus() = %v, %v; want 4 and running", s.CPUCount, s.DockerStatus)
+	}
+
+	// Not known is null on the wire.
+	data, err := json.Marshal(cleanStatus(wire.Status{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"cpu_count", "docker_status", "docker_version"} {
+		if !strings.Contains(string(data), `"`+field+`":null`) {
+			t.Errorf("status JSON = %s, want %s as null", data, field)
+		}
+	}
+}
+
 func TestCleanEventDropsACommandIDThatIsNotAULID(t *testing.T) {
 	if e := cleanEvent(wire.Event{CommandID: "not-a-ulid"}); e.CommandID != "" {
 		t.Errorf("command_id = %q, want it removed", e.CommandID)

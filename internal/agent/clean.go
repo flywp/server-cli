@@ -18,6 +18,7 @@ const (
 	maxVersionLen    = 32
 	maxStatusTextLen = 255
 	maxArchLen       = 16
+	maxCPUCount      = 4096
 	maxEventNameLen  = 64
 	maxErrorLen      = 2000
 )
@@ -55,6 +56,20 @@ func cleanStatus(s wire.Status) wire.Status {
 	s.UpdatesTotal = clampIntPtr(s.UpdatesTotal)
 	s.UpdatesSecurity = clampIntPtr(s.UpdatesSecurity)
 	s.UptimeSeconds = clampInt(s.UptimeSeconds)
+	if s.CPUCount != nil && (*s.CPUCount < 1 || *s.CPUCount > maxCPUCount) {
+		s.CPUCount = nil
+	}
+	if s.DockerStatus != nil {
+		switch *s.DockerStatus {
+		case wire.DockerRunning, wire.DockerNotRunning, wire.DockerNotInstalled:
+		default:
+			s.DockerStatus = nil
+		}
+	}
+	if s.DockerVersion != nil {
+		v := truncate(*s.DockerVersion, maxVersionLen)
+		s.DockerVersion = &v
+	}
 	return s
 }
 
