@@ -99,8 +99,11 @@ func TestStatusWithoutDockerCLI(t *testing.T) {
 func TestCheckTimesOut(t *testing.T) {
 	useFakeDocker(t, "daemon-hang")
 
+	// Under load (go test ./... -race), the fake "docker compose version"
+	// can take more than 1 s, and would then time out first. 3 s is short
+	// enough for the test and long enough for the fake.
 	old := probeTimeout
-	probeTimeout = time.Second
+	probeTimeout = 3 * time.Second
 	t.Cleanup(func() { probeTimeout = old })
 
 	start := time.Now()
@@ -110,7 +113,7 @@ func TestCheckTimesOut(t *testing.T) {
 	if !errors.As(err, &unavailable) || unavailable.Part != PartDaemon || !strings.Contains(unavailable.Detail, "no answer") {
 		t.Errorf("Check() = %v, want the daemon to be reported as not answering", err)
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Errorf("Check() took %s, want it to stop soon after the timeout", elapsed)
 	}
 }

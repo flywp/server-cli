@@ -72,13 +72,20 @@ func newEnv(t *testing.T, services ...string) *env {
 // the test if fly does not finish within 10 seconds.
 func (e *env) run(t *testing.T, dir string, args ...string) result {
 	t.Helper()
+	return runFly(t, dir, append(append(e.docker.Env(), "HOME="+e.home), e.vars...), args...)
+}
+
+// runFly executes fly in dir with the environment environ. It kills fly and
+// fails the test if fly does not finish within 10 seconds.
+func runFly(t *testing.T, dir string, environ []string, args ...string) result {
+	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, flyBin, args...)
 	cmd.Dir = dir
-	cmd.Env = append(append(e.docker.Env(), "HOME="+e.home), e.vars...)
+	cmd.Env = environ
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
