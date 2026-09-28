@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"runtime"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -31,4 +33,19 @@ func kernelRelease() string {
 	}
 
 	return unix.ByteSliceToString(u.Release[:])
+}
+
+// lowerIOPriority gives the calling goroutine the idle I/O class: its disk
+// reads wait for all other reads. The class is a property of the thread, so
+// the goroutine stays locked to its thread, and the thread ends with the
+// goroutine. Without the right to set it, the priority does not change.
+func lowerIOPriority() {
+	runtime.LockOSThread()
+
+	const (
+		whoProcess = 1 // IOPRIO_WHO_PROCESS: with id 0, the calling thread
+		classIdle  = 3 // IOPRIO_CLASS_IDLE
+		classShift = 13
+	)
+	_, _, _ = unix.Syscall(unix.SYS_IOPRIO_SET, whoProcess, 0, classIdle<<classShift)
 }

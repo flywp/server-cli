@@ -17,3 +17,5 @@ func statfs(string) (total, used uint64, err error) {
 func kernelRelease() string {
 	return ""
 }
+
+func lowerIOPriority() {}
