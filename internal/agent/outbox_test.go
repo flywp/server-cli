@@ -174,6 +174,45 @@ func TestCleanKeepsIntegersInTheRangeOfPHP(t *testing.T) {
 	}
 }
 
+func TestCleanPeaks(t *testing.T) {
+	cpu, big := 120.0, uint64(math.MaxUint64)
+	s := cleanSample(wire.Sample{CPUMaxPercent: &cpu, MemoryUsedMaxBytes: &big, NetInMaxBytesPerSecond: &big})
+	if *s.CPUMaxPercent != 100 || *s.MemoryUsedMaxBytes != math.MaxInt64 || *s.NetInMaxBytesPerSecond != math.MaxInt64 {
+		t.Errorf("cleanSample() = %v, %d, %d; want 100 and the largest PHP integer", *s.CPUMaxPercent, *s.MemoryUsedMaxBytes, *s.NetInMaxBytesPerSecond)
+	}
+	if cpu != 120 {
+		t.Error("cleanSample() changed the value of the caller")
+	}
+	if s.SwapUsedMaxBytes != nil || s.NetOutMaxBytesPerSecond != nil {
+		t.Error("cleanSample() gave a value to a peak that is not known")
+	}
+}
+
+// A sample that an older agent queued has no peaks. After an update, the new
+// agent sends them as null: not known.
+func TestQueuedSampleOfAnOlderAgentSendsNullPeaks(t *testing.T) {
+	dir := t.TempDir()
+	old := `[{"recorded_at":"2026-09-24T10:00:17Z","cpu_percent":12.5,"load_1":0.4,"memory_used_bytes":1,"memory_total_bytes":2,` +
+		`"swap_used_bytes":0,"swap_total_bytes":0,"disk_used_bytes":1,"disk_total_bytes":2,"net_in_bytes":5,"net_out_bytes":6,"net_counters_reset":false}]`
+	if err := os.WriteFile(filepath.Join(dir, "samples.json"), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	o := loadOutbox(dir, slog.New(slog.DiscardHandler))
+	if len(o.samples) != 1 {
+		t.Fatalf("samples = %d, want the queued sample", len(o.samples))
+	}
+	data, err := json.Marshal(o.samples[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"cpu_max_percent", "memory_used_max_bytes", "swap_used_max_bytes", "net_in_max_bytes_per_second", "net_out_max_bytes_per_second"} {
+		if !strings.Contains(string(data), `"`+field+`":null`) {
+			t.Errorf("sample JSON = %s, want %s as null", data, field)
+		}
+	}
+}
+
 func TestCleanEventDropsACommandIDThatIsNotAULID(t *testing.T) {
 	if e := cleanEvent(wire.Event{CommandID: "not-a-ulid"}); e.CommandID != "" {
 		t.Errorf("command_id = %q, want it removed", e.CommandID)

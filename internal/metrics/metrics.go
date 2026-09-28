@@ -1,20 +1,24 @@
 // Package metrics measures a Linux server for the monitoring agent: CPU,
-// load, memory, swap, disk and network each minute, and the status of the
-// server. It needs no root.
+// load, memory, swap, disk and network each minute, with the peaks of the
+// minute from a reading each 10 seconds, and the status of the server. It
+// needs no root.
 package metrics
 
 import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"time"
 
+	"github.com/flywp/server-cli/internal/agent"
 	"github.com/flywp/server-cli/internal/agent/wire"
 	"github.com/flywp/server-cli/internal/statefile"
 )
@@ -29,15 +33,26 @@ const (
 	updatesEvery    = time.Hour
 	aptCheckPath    = "/usr/lib/update-notifier/apt-check"
 	aptCheckTimeout = 30 * time.Second
+
+	// minFirstMinute is the shortest first minute after a start. A shorter
+	// one is mostly the load of the start, for example an install: its CPU
+	// value would be a false spike.
+	minFirstMinute = 10 * time.Second
+
+	// maxReadings limits the readings between two ticks. The agent reads
+	// five times between two ticks; more readings come only when ticks fail.
+	maxReadings = 30
 )
 
-// counters is the previous reading. It is saved, so that the first sample
-// after an agent restart continues from it.
-type counters struct {
+// reading holds the counters at one moment. The reading of the tick is saved,
+// so that the first sample after an agent restart continues from it.
+type reading struct {
 	BootID string                 `json:"boot_id"`
 	At     time.Time              `json:"at"`
 	CPU    cpuTimes               `json:"cpu"`
 	Net    map[string]netCounters `json:"net"`
+	// mem is not saved: only the readings of the minute give its peak.
+	mem memory
 }
 
 // Collector measures the server. Use New.
@@ -52,7 +67,15 @@ type Collector struct {
 	release  func() string
 	aptCheck func(ctx context.Context) ([]byte, error)
 
-	prev *counters
+	// prev is the reading of the last tick, and readings are the readings
+	// after it, oldest first. They give the windows of the next sample.
+	prev     *reading
+	readings []reading
+	// fromStart is true while prev is the reading of the start of this
+	// process, not a saved reading. minFirst is the shortest first minute;
+	// tests set it to 0.
+	fromStart bool
+	minFirst  time.Duration
 	// noInterface is true after the warning that no interface is counted.
 	noInterface bool
 
@@ -72,51 +95,95 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 		statfs:   statfs,
 		release:  kernelRelease,
 		aptCheck: runAptCheck,
+		minFirst: minFirstMinute,
 	}
 
 	// Take a reading now, so that the first sample has a CPU value for the
-	// time since the start. The saved reading replaces it only when it is
+	// time since the start. The saved reading comes before it only when it is
 	// recent and from this boot: then the traffic continues without a gap.
 	now := time.Now()
-	if cur, err := c.read(now); err == nil {
-		cur.Net = nil
-		c.prev = &cur
+	start, startErr := c.read(now)
+
+	var saved reading
+	err := statefile.Read(c.path, &saved)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		log.Warn("ignoring the saved counters", "error", err)
 	}
 
-	var saved counters
-	err := statefile.Read(c.path, &saved)
 	switch {
-	case err == nil:
-		if c.prev != nil && saved.BootID == c.prev.BootID && now.Sub(saved.At) <= maxAge {
-			c.prev = &saved
-		}
-	case !errors.Is(err, fs.ErrNotExist):
-		log.Warn("ignoring the saved counters", "error", err)
+	case startErr != nil:
+		// The first sample has no previous reading.
+	case err == nil && saved.BootID == start.BootID && saved.At.Before(now) && now.Sub(saved.At) <= maxAge:
+		c.prev = &saved
+		c.readings = []reading{start}
+	default:
+		// The traffic since the start is not the traffic of one minute.
+		start.Net = nil
+		c.prev = &start
+		c.fromStart = true
 	}
 
 	return c
 }
 
+// Read takes a reading between two ticks, for the peaks of the minute. A
+// reading that fails is left out: the windows on each side of it join into
+// one (contract v0.4.0).
+func (c *Collector) Read(now time.Time) {
+	if last := c.last(); last != nil && !now.After(last.At) {
+		return
+	}
+
+	r, err := c.read(now)
+	if err != nil {
+		c.log.Debug("skipping a reading", "error", err)
+		return
+	}
+	if len(c.readings) >= maxReadings {
+		c.readings = slices.Delete(c.readings, 0, 1)
+	}
+	c.readings = append(c.readings, r)
+}
+
+// last returns the newest reading, or nil.
+func (c *Collector) last() *reading {
+	if n := len(c.readings); n > 0 {
+		return &c.readings[n-1]
+	}
+	return c.prev
+}
+
 // Sample measures the minute that ends at now. At the first sample and then
 // each hour, it also counts the waiting updates for Status: apt-check takes
-// some seconds, and a sample comes before the sends of a report.
+// some seconds, and a sample comes before the sends of a report. The count
+// comes after the reading of the tick, so that it does not move the reading.
 func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
-	c.refreshUpdates(context.Background())
-
 	cur, err := c.read(now)
 	if err != nil {
 		return wire.Sample{}, err
 	}
+
+	// A tick right after the start has no minute to measure. Its reading
+	// starts the next minute, which then has all its values.
+	if c.fromStart {
+		c.fromStart = false
+		if d := cur.At.Sub(c.prev.At); d >= 0 && d < c.minFirst {
+			c.prev, c.readings = &cur, nil
+			if err := statefile.Write(c.path, cur); err != nil {
+				c.log.Warn("saving the counters", "error", err)
+			}
+			return wire.Sample{}, fmt.Errorf("%w: the first minute is only %s since the start", agent.ErrNoSample, d.Round(time.Millisecond))
+		}
+	}
+
+	c.refreshUpdates(context.Background())
 
 	var s wire.Sample
 	if s.Load1, err = parseFile(c, "proc/loadavg", parseLoad); err != nil {
 		return wire.Sample{}, err
 	}
 
-	mem, err := parseFile(c, "proc/meminfo", parseMeminfo)
-	if err != nil {
-		return wire.Sample{}, err
-	}
+	mem := cur.mem
 	s.MemoryTotalBytes = mem.total
 	s.MemoryUsedBytes = mem.total - min(mem.available, mem.total)
 	s.SwapTotalBytes = mem.swapTotal
@@ -140,7 +207,10 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 		}
 	}
 
+	setPeaks(&s, c.prev, c.readings, cur)
+
 	c.prev = &cur
+	c.readings = nil
 	if err := statefile.Write(c.path, cur); err != nil {
 		c.log.Warn("saving the counters", "error", err)
 	}
@@ -152,7 +222,7 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 // that both readings have, so a new or a removed interface makes no spike.
 // reset is true when the traffic of the minute is not known: no previous
 // reading, a reboot, a reading older than maxAge, or a counter that went back.
-func netDelta(prev *counters, cur counters) (in, out uint64, reset bool) {
+func netDelta(prev *reading, cur reading) (in, out uint64, reset bool) {
 	if prev == nil || prev.Net == nil || prev.BootID != cur.BootID {
 		return 0, 0, true
 	}
@@ -176,15 +246,20 @@ func netDelta(prev *counters, cur counters) (in, out uint64, reset bool) {
 }
 
 // read takes the counters now.
-func (c *Collector) read(now time.Time) (counters, error) {
+func (c *Collector) read(now time.Time) (reading, error) {
 	cpu, err := parseFile(c, "proc/stat", parseCPU)
 	if err != nil {
-		return counters{}, err
+		return reading{}, err
+	}
+
+	mem, err := parseFile(c, "proc/meminfo", parseMeminfo)
+	if err != nil {
+		return reading{}, err
 	}
 
 	all, err := parseFile(c, "proc/net/dev", parseNetDev)
 	if err != nil {
-		return counters{}, err
+		return reading{}, err
 	}
 
 	net := map[string]netCounters{}
@@ -194,10 +269,10 @@ func (c *Collector) read(now time.Time) (counters, error) {
 
 	bootID, err := os.ReadFile(c.file("proc/sys/kernel/random/boot_id"))
 	if err != nil {
-		return counters{}, err
+		return reading{}, err
 	}
 
-	return counters{BootID: string(bytes.TrimSpace(bootID)), At: now, CPU: cpu, Net: net}, nil
+	return reading{BootID: string(bytes.TrimSpace(bootID)), At: now, CPU: cpu, Net: net, mem: mem}, nil
 }
 
 // interfaces returns the network interfaces that have a hardware device and

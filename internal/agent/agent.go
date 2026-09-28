@@ -31,9 +31,16 @@ type ControlPlane interface {
 	PollCommands(ctx context.Context) (*wire.CommandsReply, error)
 }
 
+// ErrNoSample is the error of a minute that has no sample, for example a
+// first minute that is too short to measure. It is not a problem.
+var ErrNoSample = errors.New("no sample for this minute")
+
 // Collector measures the server.
 type Collector interface {
-	// Sample measures the minute that ends at now.
+	// Read takes a reading between two ticks, for the peaks of the minute.
+	Read(now time.Time)
+	// Sample measures the minute that ends at now. It returns an error that
+	// wraps ErrNoSample when the minute has no sample.
 	Sample(now time.Time) (wire.Sample, error)
 	// Status describes the server now.
 	Status(ctx context.Context) wire.Status
@@ -133,23 +140,58 @@ func run(ctx context.Context, cfg Config, log *slog.Logger, cp ControlPlane, col
 	return nil
 }
 
-// loop calls tick at the offset second of each minute until ctx is done. It
-// returns true when a command ends the process.
+// loop calls tick at the offset second of each minute until ctx is done.
+// Between two ticks, it reads the server each 10 seconds for the peaks of the
+// minute. It returns true when a command ends the process.
 func (a *agent) loop(ctx context.Context) (exit bool) {
 	for {
-		next := nextAfter(time.Now(), a.last, a.cfg.Offset())
-		timer := time.NewTimer(time.Until(next))
+		now := time.Now()
+		next := nextAfter(now, a.last, a.cfg.Offset())
+		wake := next
+		if a.collector != nil {
+			if r := nextReading(now, a.cfg.Offset()); r.Before(next) {
+				wake = r
+			}
+		}
+
+		timer := time.NewTimer(time.Until(wake))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return false
 		case <-timer.C:
+			if wake.Before(next) {
+				// The reading has the time at which it ran, so that a late
+				// timer or a step of the wall clock does not change the
+				// length of a window.
+				a.collector.Read(time.Now())
+				// A reading that ran late must not skip the tick after it.
+				if time.Now().Before(next) {
+					continue
+				}
+			}
 			a.last = next
 			if a.tick(ctx, next) {
 				return true
 			}
 		}
 	}
+}
+
+// readEvery is the time between two readings of the server (contract v0.4.0).
+const readEvery = 10 * time.Second
+
+// nextReading returns the next reading after now: offset past a full minute,
+// and each 10 seconds after it. A tick is also a reading time: the loop then
+// runs the tick instead. After a step back of the wall clock, a reading can
+// come again; the collector ignores a reading that is not newer than its last.
+func nextReading(now time.Time, offset time.Duration) time.Time {
+	t := now.Truncate(readEvery).Add(offset % readEvery)
+	for !t.After(now) {
+		t = t.Add(readEvery)
+	}
+
+	return t
 }
 
 // maxStepBack is the largest step back of the wall clock after which the loop
@@ -182,10 +224,15 @@ func (a *agent) tick(ctx context.Context, now time.Time) (exit bool) {
 	a.log.Debug("tick", "at", now)
 
 	if a.collector != nil {
-		s, err := a.collector.Sample(now)
-		if err != nil {
+		// The reading has the time at which it ran; the sample has the time
+		// of its tick, for its minute on the control plane.
+		s, err := a.collector.Sample(time.Now())
+		switch {
+		case errors.Is(err, ErrNoSample):
+			a.log.Info("no sample for this minute", "reason", err)
+		case err != nil:
 			a.log.Warn("skipping the sample of this minute", "error", err)
-		} else {
+		default:
 			s.RecordedAt = now
 			a.outbox.addSample(cleanSample(s))
 		}

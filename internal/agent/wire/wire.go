@@ -45,6 +45,14 @@ type Sample struct {
 	NetInBytes       uint64 `json:"net_in_bytes"`
 	NetOutBytes      uint64 `json:"net_out_bytes"`
 	NetCountersReset bool   `json:"net_counters_reset"`
+
+	// The peaks within the minute, from the readings each 10 seconds
+	// (contract v0.4.0). nil (JSON null) means "not known".
+	CPUMaxPercent           *float64 `json:"cpu_max_percent"`
+	MemoryUsedMaxBytes      *uint64  `json:"memory_used_max_bytes"`
+	SwapUsedMaxBytes        *uint64  `json:"swap_used_max_bytes"`
+	NetInMaxBytesPerSecond  *uint64  `json:"net_in_max_bytes_per_second"`
+	NetOutMaxBytesPerSecond *uint64  `json:"net_out_max_bytes_per_second"`
 }
 
 // MetricsReply is the reply to POST /agent/v1/metrics.
