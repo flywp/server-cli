@@ -14,6 +14,9 @@
    git push origin v0.2.0
    ```
 
+   Push the tag right after the merge: `install.sh` from `main` installs only a release with
+   `checksums.txt`, so until the release exists it stops.
+
    The Release workflow checks that the tag is on `main`, runs `make check`, builds the archives
    with `make release`, and publishes the release with `fly-linux-amd64.tar.gz`,
    `fly-linux-arm64.tar.gz` and `checksums.txt`. Do not rename these files: installed CLIs look for

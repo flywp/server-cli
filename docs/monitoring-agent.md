@@ -125,8 +125,9 @@ agent.
    - `checksums.txt.sig` has a valid signature from a FlyWP release key that this build trusts;
    - the signature is more than 24 hours old.
 
-   Each server installs at its own time of day. A dev build, or a build without a trusted key,
-   never updates itself. `FLY_AGENT_AUTO_UPDATE=off` stops this path on one server.
+   Each server installs at its own time of day. A dev pre-release updates itself too. A build
+   without a release version (`make build` between tags, `go build`) never does.
+   `FLY_AGENT_AUTO_UPDATE=off` stops this path on one server.
 3. **`sudo fly update`** or `install.sh` install the latest release after checking its sha256 in
    `checksums.txt`.
 
@@ -152,7 +153,8 @@ agent.
 | "some files of a site cannot be read" | The disk walk skipped folders; the site value is lower than the real use. Logged once per folder after each start. |
 | "a new release installs after its wait" | Normal: a signed release waits 24 hours. |
 | "a new release waits for its signature" | The latest release is not signed yet. |
-| "auto-update is off: this build trusts no release key" | A local or dev build. Use a release build. |
+| "auto-update is off: this build has no release version" | A local build. Install a release or a dev pre-release. |
+| "auto-update is off: the agent cannot write the folder of its binary" | The binary is not in a folder of the server user. Install again with `install.sh`. |
 
 To remove the agent from a server:
 
