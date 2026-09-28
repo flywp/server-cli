@@ -202,3 +202,29 @@ func parseAptCheck(out []byte) (total, security uint64, err error) {
 
 	return total, security, nil
 }
+
+// parsePSI reads the total of the "some" line of a /proc/pressure file: the
+// microseconds in which at least one task waited for the resource.
+//
+//	some avg10=0.00 avg60=0.00 avg300=0.00 total=12345
+//	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+func parsePSI(data []byte) (uint64, error) {
+	s := bufio.NewScanner(bytes.NewReader(data))
+	for s.Scan() {
+		fields := strings.Fields(s.Text())
+		if len(fields) == 0 || fields[0] != "some" {
+			continue
+		}
+		for _, f := range fields[1:] {
+			if v, ok := strings.CutPrefix(f, "total="); ok {
+				n, err := strconv.ParseUint(v, 10, 64)
+				if err != nil {
+					return 0, fmt.Errorf("pressure: bad total %q", v)
+				}
+				return n, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("pressure: no total on a \"some\" line")
+}

@@ -53,6 +53,16 @@ type Sample struct {
 	SwapUsedMaxBytes        *uint64  `json:"swap_used_max_bytes"`
 	NetInMaxBytesPerSecond  *uint64  `json:"net_in_max_bytes_per_second"`
 	NetOutMaxBytesPerSecond *uint64  `json:"net_out_max_bytes_per_second"`
+
+	// The share of the time in which at least one task waited for the CPU,
+	// the memory or the disk (PSI), 0 to 100, and its peak within the minute
+	// (contract v0.4.0). nil (JSON null) means "not known".
+	CPUPressurePercent       *float64 `json:"cpu_pressure_percent"`
+	CPUPressureMaxPercent    *float64 `json:"cpu_pressure_max_percent"`
+	MemoryPressurePercent    *float64 `json:"memory_pressure_percent"`
+	MemoryPressureMaxPercent *float64 `json:"memory_pressure_max_percent"`
+	IOPressurePercent        *float64 `json:"io_pressure_percent"`
+	IOPressureMaxPercent     *float64 `json:"io_pressure_max_percent"`
 }
 
 // MetricsReply is the reply to POST /agent/v1/metrics.
