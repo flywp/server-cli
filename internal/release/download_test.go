@@ -145,3 +145,83 @@ func TestRemoveTempKeepsYoungFiles(t *testing.T) {
 		t.Errorf("directory holds %v, want the young download and the binary only", names)
 	}
 }
+
+// testRelease serves a release with the archive and a checksum file, and
+// returns its description.
+func testRelease(t *testing.T, archive []byte, checksums string) *GithubRelease {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/fly-linux-amd64.tar.gz":
+			_, _ = w.Write(archive)
+		case "/checksums.txt":
+			_, _ = w.Write([]byte(checksums))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	rel := &GithubRelease{TagName: "v0.3.0"}
+	for _, name := range []string{"fly-linux-amd64.tar.gz", "checksums.txt"} {
+		if name == "checksums.txt" && checksums == "" {
+			continue
+		}
+		rel.Assets = append(rel.Assets, Asset{Name: name, BrowserDownloadURL: srv.URL + "/" + name})
+	}
+	return rel
+}
+
+func TestSelfUpdateChecksTheArchive(t *testing.T) {
+	data := archive(t, map[string]string{"fly-linux-amd64": "new"}).Bytes()
+	other := sum([]byte("other"))
+
+	tests := []struct {
+		name, checksums, want string
+	}{
+		{"checksum agrees", sum(data) + "  fly-linux-arm64.tar.gz\n" + sum(data) + "  fly-linux-amd64.tar.gz\n", ""},
+		{"binary mode mark", sum(data) + " *fly-linux-amd64.tar.gz\n", ""},
+		{"checksum does not agree", other + "  fly-linux-amd64.tar.gz\n", "the sha256 of"},
+		{"no line for the archive", other + "  fly-linux-arm64.tar.gz\n", "has no line for fly-linux-amd64.tar.gz"},
+		{"no checksum file", "", "has no checksums.txt"},
+		{"CRLF line ends", sum(data) + "  fly-linux-amd64.tar.gz\r\n", ""},
+		{"upper case hex", strings.ToUpper(sum(data)) + "  fly-linux-amd64.tar.gz\n", ""},
+		{"the same line two times", sum(data) + "  fly-linux-amd64.tar.gz\n" + sum(data) + "  fly-linux-amd64.tar.gz\n", ""},
+		{"two different sums", sum(data) + "  fly-linux-amd64.tar.gz\n" + other + "  fly-linux-amd64.tar.gz\n", "two different sums"},
+		{"a similar name", sum(data) + "  fly-linux-amd64.tar.gz.sig\n", "has no line for fly-linux-amd64.tar.gz"},
+		{"empty checksum file", "\n", "has no line for fly-linux-amd64.tar.gz"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			exe := filepath.Join(dir, "fly")
+			if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			err := selfUpdate(context.Background(), testRelease(t, data, tt.checksums), exe, "linux", "amd64")
+
+			got, _ := os.ReadFile(exe)
+			if tt.want == "" {
+				if err != nil || string(got) != "new" {
+					t.Fatalf("selfUpdate() = %v, binary %q; want the new binary", err, got)
+				}
+				if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+					t.Errorf("the directory holds %d files after the update, want only the binary", len(entries))
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("selfUpdate() error = %v, want %q", err, tt.want)
+			}
+			if string(got) != "old" {
+				t.Errorf("binary = %q, want the old binary unchanged", got)
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+				t.Errorf("the directory holds %d files, want only the binary", len(entries))
+			}
+		})
+	}
+}

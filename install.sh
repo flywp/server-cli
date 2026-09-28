@@ -148,6 +148,25 @@ download_release() {
     info_msg "Download completed successfully."
 }
 
+# Examine the download with the checksum file of the release. The file has
+# one line for each archive: "<sha256>  <file name>".
+verify_download() {
+    info_msg "Verifying the download with checksums.txt..."
+
+    CHECKSUMS_URL="https://github.com/flywp/server-cli/releases/download/${TAG_NAME}/checksums.txt"
+    if ! curl -fsSL -o "$TEMP_DIR/checksums.txt" "$CHECKSUMS_URL"; then
+        rm -rf "$TEMP_DIR"
+        error_exit "Failed to download checksums.txt of ${TAG_NAME}. The download cannot be checked, so it is not installed."
+    fi
+
+    if ! (cd "$TEMP_DIR" && grep " fly-${OS}-${ARCH}.tar.gz\$" checksums.txt | sha256sum -c --status -); then
+        rm -rf "$TEMP_DIR"
+        error_exit "The checksum of fly-${OS}-${ARCH}.tar.gz does not agree with checksums.txt. The download is not installed."
+    fi
+
+    info_msg "Checksum verified."
+}
+
 # Extract and install
 install_binary() {
     info_msg "Extracting $DOWNLOAD_FILE..."
@@ -215,6 +234,9 @@ main() {
     
     # Download the release
     download_release
+
+    # Examine the download
+    verify_download
     
     # Install the binary
     install_binary

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/flywp/server-cli/internal/release"
 	"github.com/flywp/server-cli/internal/service"
@@ -37,7 +39,11 @@ command also restarts the agent, so that the agent runs the new binary.`,
 			return errors.New("the update command must be run as root, please run 'sudo fly update'")
 		}
 
-		update, err := release.CheckForUpdates(cmd.Context())
+		// Ctrl-C stops the download, and the partial download is removed.
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
+		update, err := release.CheckForUpdates(ctx)
 		if err != nil {
 			return fmt.Errorf("checking for updates: %w", err)
 		}
@@ -48,7 +54,7 @@ command also restarts the agent, so that the agent runs the new binary.`,
 			fmt.Printf("This is not a release build (version %s). Latest release: %s\n", version.Version, latest)
 		case !update.Available:
 			fmt.Println("You are already running the latest version.")
-			return restartStaleAgent(cmd.Context())
+			return restartStaleAgent(ctx)
 		default:
 			fmt.Printf("New version available: %s\n", latest)
 		}
@@ -65,12 +71,12 @@ command also restarts the agent, so that the agent runs the new binary.`,
 		}
 
 		fmt.Println("Updating...")
-		if err := release.SelfUpdate(cmd.Context(), update.Release); err != nil {
+		if err := release.SelfUpdate(ctx, update.Release); err != nil {
 			return fmt.Errorf("updating: %w", err)
 		}
 		fmt.Printf("Updated to %s.\n", latest)
 
-		return restartAgent(cmd.Context())
+		return restartAgent(ctx)
 	},
 }
 
