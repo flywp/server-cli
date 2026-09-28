@@ -35,7 +35,9 @@ func RunCompose(composePath string, args ...string) error {
 	return cmd.Run()
 }
 
-func getContainerName(composePath string) (string, error) {
+// DefaultService returns the service that runs PHP for the site: "php" for
+// PHP sites or "openlitespeed" for OpenLiteSpeed sites.
+func DefaultService(composePath string) (string, error) {
 	data, err := os.ReadFile(composePath)
 	if err != nil {
 		return "", err
@@ -48,19 +50,25 @@ func getContainerName(composePath string) (string, error) {
 
 	if _, exists := config.Services["php"]; exists {
 		return "php", nil
-	} else if _, exists := config.Services["litespeed"]; exists {
-		return "litespeed", nil
+	} else if _, exists := config.Services["openlitespeed"]; exists {
+		return "openlitespeed", nil
 	}
 
 	return "", fmt.Errorf("no suitable container found")
 }
 
 func RunWPCLI(composePath string, args []string) error {
-	containerName, err := getContainerName(composePath)
+	containerName, err := DefaultService(composePath)
 	if err != nil {
 		return err
 	}
 
-	wpArgs := append([]string{"exec", containerName, "wp"}, args...)
+	var wpArgs []string
+	if containerName == "openlitespeed" {
+		wpArgs = append([]string{"exec", "--user", "www-data", containerName, "wp"}, args...)
+	} else {
+		wpArgs = append([]string{"exec", containerName, "wp"}, args...)
+	}
+
 	return RunCompose(composePath, wpArgs...)
 }
