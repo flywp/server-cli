@@ -112,6 +112,38 @@ func TestNextAfterAClockStepBack(t *testing.T) {
 	}
 }
 
+func TestNextAfterALargeClockStepBack(t *testing.T) {
+	base := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	offset := 17 * time.Second
+
+	tests := []struct {
+		name string
+		step time.Duration
+		want time.Time
+	}{
+		// A step of 90 s is still small: skip to the minute after the last tick.
+		{"90 seconds", 90 * time.Second, base.Add(time.Minute + offset)},
+		// The clock was one hour ahead. Follow the new clock: the next tick
+		// comes in less than one minute, not in one hour.
+		{"one hour", time.Hour, base.Add(-time.Hour + time.Minute + offset)},
+		{"one year", 365 * 24 * time.Hour, base.Add(-365*24*time.Hour + time.Minute + offset)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			last := base.Add(offset)
+			now := last.Add(-tt.step).Add(time.Second)
+			got := nextAfter(now, last, offset)
+			if !got.Equal(tt.want) {
+				t.Errorf("nextAfter() = %s, want %s", got, tt.want)
+			}
+			if wait := got.Sub(now); wait <= 0 || wait > tt.step+2*time.Minute {
+				t.Errorf("the loop waits %v after a step back of %v", wait, tt.step)
+			}
+		})
+	}
+}
+
 func TestLoopTicksAtTheOffsetAndReportsEachInterval(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
@@ -167,7 +199,7 @@ func TestRunRefusesASecondAgent(t *testing.T) {
 	}
 }
 
-func TestLoadInterval(t *testing.T) {
+func TestLoadStateInterval(t *testing.T) {
 	tests := []struct {
 		name  string
 		saved *state
@@ -188,8 +220,8 @@ func TestLoadInterval(t *testing.T) {
 				}
 			}
 
-			if got := loadInterval(dir, slog.New(&recorder{})); got != tt.want {
-				t.Errorf("loadInterval() = %d, want %d", got, tt.want)
+			if got := loadState(dir, slog.New(&recorder{})).ReportInterval; got != tt.want {
+				t.Errorf("loadState().ReportInterval = %d, want %d", got, tt.want)
 			}
 		})
 	}

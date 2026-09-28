@@ -39,8 +39,8 @@ func cleanStatus(s wire.Status) wire.Status {
 	s.OS = truncate(s.OS, maxStatusTextLen)
 	s.Kernel = truncate(s.Kernel, maxStatusTextLen)
 	s.Arch = truncate(s.Arch, maxArchLen)
-	s.UpdatesTotal = clampInt(s.UpdatesTotal)
-	s.UpdatesSecurity = clampInt(s.UpdatesSecurity)
+	s.UpdatesTotal = clampIntPtr(s.UpdatesTotal)
+	s.UpdatesSecurity = clampIntPtr(s.UpdatesSecurity)
 	s.UptimeSeconds = clampInt(s.UptimeSeconds)
 	return s
 }
@@ -68,6 +68,15 @@ func cleanEvent(e wire.Event) wire.Event {
 // agent would then send the same sample again for 24 hours.
 func clampInt(v uint64) uint64 {
 	return min(v, math.MaxInt64)
+}
+
+// clampIntPtr is clampInt for a value that can be "not known" (nil).
+func clampIntPtr(v *uint64) *uint64 {
+	if v == nil {
+		return nil
+	}
+	c := clampInt(*v)
+	return &c
 }
 
 // clamp keeps v between lo and hi. NaN becomes lo.

@@ -8,6 +8,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -45,6 +46,8 @@ func agentEnv(t *testing.T) []string {
 		"FLY_AGENT_TOKEN=" + testToken,
 		"FLY_AGENT_SERVER_ID=17",
 		"STATE_DIRECTORY=" + t.TempDir(),
+		// A test never asks the real GitHub for a release.
+		"FLY_AGENT_AUTO_UPDATE=off",
 	}
 }
 
@@ -257,6 +260,98 @@ func TestAgentUpdatesItself(t *testing.T) {
 	}
 	if data, _ := e["data"].(map[string]any); data["version"] != "v9.9.9" {
 		t.Errorf("result data = %v, want version v9.9.9", e["data"])
+	}
+}
+
+func TestAgentInstallsASignedReleaseByItself(t *testing.T) {
+	// A release has archives for Linux only.
+	if runtime.GOOS != "linux" {
+		t.Skip("the releases have binaries for Linux only")
+	}
+	environ := agentEnv(t)
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The new release: fly built as v9.9.9, signed 25 hours ago.
+	newBin := filepath.Join(t.TempDir(), "fly")
+	build := exec.Command("go", "build", "-ldflags", "-X github.com/flywp/server-cli/internal/version.Version=v9.9.9", "-o", newBin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building the new release: %v\n%s", err, out)
+	}
+	archiveName := release.BinaryName(runtime.GOOS, runtime.GOARCH) + ".tar.gz"
+	tarball := releaseArchive(t, newBin, release.BinaryName(runtime.GOOS, runtime.GOARCH))
+	sum := sha256.Sum256(tarball)
+	checksums := []byte(hex.EncodeToString(sum[:]) + "  " + archiveName + "\n")
+	sigFile := release.Sign(priv, "v9.9.9", time.Now().Add(-25*time.Hour), checksums)
+
+	var github *httptest.Server
+	github = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/latest":
+			assets := []map[string]string{}
+			for _, name := range []string{archiveName, release.ChecksumsAsset, release.SignatureAsset} {
+				assets = append(assets, map[string]string{"name": name, "browser_download_url": github.URL + "/download/" + name})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v9.9.9", "assets": assets})
+		case "/download/" + archiveName:
+			_, _ = w.Write(tarball)
+		case "/download/" + release.ChecksumsAsset:
+			_, _ = w.Write(checksums)
+		case "/download/" + release.SignatureAsset:
+			_, _ = w.Write(sigFile)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer github.Close()
+
+	// The running agent: an older release that asks this GitHub and trusts
+	// the test key.
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "fly")
+	ldflags := strings.Join([]string{
+		"-X github.com/flywp/server-cli/internal/version.Version=v0.0.1",
+		"-X github.com/flywp/server-cli/internal/release.GithubAPI=" + github.URL + "/releases/latest",
+		"-X github.com/flywp/server-cli/internal/release.trustedKeys=" + release.KeyLine(pub),
+	}, " ")
+	if out, err := exec.Command("go", "build", "-ldflags", ldflags, "-o", exe, ".").CombinedOutput(); err != nil {
+		t.Fatalf("building the old release: %v\n%s", err, out)
+	}
+
+	srv := httptest.NewServer(&updateServer{closed: true})
+	defer srv.Close()
+
+	// Work 3 seconds from now. The agent never checked, so it checks at its
+	// first tick.
+	environ = append(environ, "FLY_AGENT_URL="+srv.URL, fmt.Sprintf("FLY_AGENT_SERVER_ID=%d", (time.Now().Second()+3)%60), "FLY_AGENT_AUTO_UPDATE=on")
+
+	agent := exec.Command(exe, "agent", "run")
+	agent.Env = environ
+	stderr := &lockedBuffer{}
+	agent.Stderr = stderr
+	if err := agent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- agent.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the agent exit after the update: %v, want 0. stderr:\n%s", err, stderr)
+		}
+	case <-time.After(70 * time.Second):
+		_ = agent.Process.Kill()
+		t.Fatalf("the agent did not install the release within 70s. stderr:\n%s", stderr)
+	}
+
+	if out := runFlyAt(t, exe, "version"); !strings.Contains(out, "v9.9.9") {
+		t.Fatalf("fly version = %q, want the new release v9.9.9 on disk. stderr:\n%s", out, stderr)
+	}
+	if !strings.Contains(stderr.String(), "installed the new release") {
+		t.Errorf("stderr does not log the install:\n%s", stderr)
 	}
 }
 

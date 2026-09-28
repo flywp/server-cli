@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -156,9 +157,20 @@ func TestCleanKeepsIntegersInTheRangeOfPHP(t *testing.T) {
 		t.Errorf("cleanSample() = %d, %d, %d; want %d, %d, 42", s.NetInBytes, s.MemoryTotalBytes, s.DiskUsedBytes, uint64(math.MaxInt64), uint64(math.MaxInt64))
 	}
 
-	st := cleanStatus(wire.Status{UpdatesTotal: math.MaxUint64, UpdatesSecurity: 1 << 63, UptimeSeconds: math.MaxUint64})
-	if st.UpdatesTotal != math.MaxInt64 || st.UpdatesSecurity != math.MaxInt64 || st.UptimeSeconds != math.MaxInt64 {
+	total, security := uint64(math.MaxUint64), uint64(1<<63)
+	st := cleanStatus(wire.Status{UpdatesTotal: &total, UpdatesSecurity: &security, UptimeSeconds: math.MaxUint64})
+	if *st.UpdatesTotal != math.MaxInt64 || *st.UpdatesSecurity != math.MaxInt64 || st.UptimeSeconds != math.MaxInt64 {
 		t.Errorf("cleanStatus() = %+v, want each count at most %d", st, uint64(math.MaxInt64))
+	}
+
+	// Unknown counts stay unknown, and go on the wire as null.
+	st = cleanStatus(wire.Status{})
+	data, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"updates_total":null`) || !strings.Contains(string(data), `"updates_security":null`) {
+		t.Errorf("status JSON = %s, want null update counts", data)
 	}
 }
 

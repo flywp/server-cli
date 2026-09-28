@@ -1,7 +1,7 @@
 # Developer commands for fly. Run "make help" for the list.
 # Keep this file compatible with GNU Make 3.81, the version on macOS.
 
-.PHONY: build test vet lint vuln fmt fmt-check check release dev-version dev-release clean help
+.PHONY: build test vet lint vuln fmt fmt-check check release dev-version dev-release release-key sign-release clean help
 
 BINARY := fly
 PKG := github.com/flywp/server-cli
@@ -10,7 +10,10 @@ PKG := github.com/flywp/server-cli
 #   make release VERSION=v0.2.0
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-BUILD_DATE := $(shell date -u +%Y-%m-%d)
+# The date of the commit, not of the build: the same commit gives the same
+# binary on any computer, so make sign-release can build a release again and
+# compare it with the one that CI published.
+BUILD_DATE := $(shell TZ=UTC git log -1 --date=format-local:%Y-%m-%d --format=%cd 2>/dev/null || date -u +%Y-%m-%d)
 
 LDFLAGS := -X $(PKG)/internal/version.Version=$(VERSION) \
 	-X $(PKG)/internal/version.CommitHash=$(COMMIT) \
@@ -89,6 +92,27 @@ dev-release: ## Tag HEAD as a dev pre-release and push the tag (CI publishes it)
 	git push origin "$(DEV_VERSION)"; \
 	echo "Pushed $(DEV_VERSION). The Release workflow publishes it as a pre-release:"; \
 	echo "  https://github.com/flywp/server-cli/releases/tag/$(DEV_VERSION)"
+
+# The agent installs a release by itself only when checksums.txt has a
+# signature from a key that is kept outside GitHub. Make the key one time, put
+# the printed public key line in internal/release/keys.go, and keep the
+# private key in a password manager, with a backup. Never commit it.
+# COMMENT names the key, in the key file and next to its line in keys.go.
+COMMENT ?= server-cli release key for flywp
+release-key: ## Make the release signing key: make release-key KEY=<file outside the repo> [COMMENT=...]
+	@test -n "$(KEY)" || { echo "Usage: make release-key KEY=<file outside the repo> [COMMENT=\"...\"]"; exit 1; }
+	go run ./tools/releasesign keygen -out "$(KEY)" -comment "$(COMMENT)"
+
+# Run this after the Release workflow publishes VERSION, on your own
+# computer. tools/sign-release.sh builds the release again from your local
+# tag, checks that GitHub serves the same binaries, signs checksums.txt,
+# checks the signature with the keys of the tag, and uploads
+# checksums.txt.sig. Agents install the release 24 hours after the
+# signature. KEY=- reads the key from stdin.
+sign-release: ## Sign a published release: make sign-release VERSION=v0.2.1 KEY=<file or ->
+	@if [ "$(origin VERSION)" != "command line" ] || [ -z "$(KEY)" ]; then \
+		echo "Usage: make sign-release VERSION=v0.2.1 KEY=<file or ->"; exit 1; fi
+	@tools/sign-release.sh "$(VERSION)" "$(KEY)"
 
 clean: ## Remove bin/ and build/
 	rm -rf bin/ build/
