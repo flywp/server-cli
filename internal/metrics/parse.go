@@ -228,3 +228,40 @@ func parsePSI(data []byte) (uint64, error) {
 
 	return 0, fmt.Errorf("pressure: no total on a \"some\" line")
 }
+
+// diskCounters are the completed operations and the 512-byte sectors of one
+// disk, from /proc/diskstats.
+type diskCounters struct {
+	ReadOps      uint64 `json:"read_ops"`
+	ReadSectors  uint64 `json:"read_sectors"`
+	WriteOps     uint64 `json:"write_ops"`
+	WriteSectors uint64 `json:"write_sectors"`
+}
+
+// parseDiskstats reads /proc/diskstats. Each line is
+//
+//	major minor name reads merged sectors ms writes merged sectors ms ...
+//
+// The reads and writes completed are columns 4 and 8, and the sectors read
+// and written are columns 6 and 10. A sector is 512 bytes for each disk.
+func parseDiskstats(data []byte) (map[string]diskCounters, error) {
+	out := map[string]diskCounters{}
+	s := bufio.NewScanner(bytes.NewReader(data))
+	for s.Scan() {
+		fields := strings.Fields(s.Text())
+		if len(fields) < 10 {
+			continue
+		}
+		var v [4]uint64
+		for i, col := range []int{3, 5, 7, 9} {
+			n, err := strconv.ParseUint(fields[col], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("/proc/diskstats: bad counters for %s", fields[2])
+			}
+			v[i] = n
+		}
+		out[fields[2]] = diskCounters{ReadOps: v[0], ReadSectors: v[1], WriteOps: v[2], WriteSectors: v[3]}
+	}
+
+	return out, nil
+}

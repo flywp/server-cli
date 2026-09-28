@@ -1,5 +1,5 @@
 // Package wire holds the JSON bodies of the FlyWP monitoring agent contract
-// v0.2.1: the requests that the agent sends and the replies that it reads.
+// v0.4.0: the requests that the agent sends and the replies that it reads.
 package wire
 
 import (
@@ -63,6 +63,17 @@ type Sample struct {
 	MemoryPressureMaxPercent *float64 `json:"memory_pressure_max_percent"`
 	IOPressurePercent        *float64 `json:"io_pressure_percent"`
 	IOPressureMaxPercent     *float64 `json:"io_pressure_max_percent"`
+
+	// The disk activity of the minute, and its peaks each second within the
+	// minute (contract v0.4.0). nil (JSON null) means "not known".
+	DiskReadBytes              *uint64 `json:"disk_read_bytes"`
+	DiskWriteBytes             *uint64 `json:"disk_write_bytes"`
+	DiskReadOps                *uint64 `json:"disk_read_ops"`
+	DiskWriteOps               *uint64 `json:"disk_write_ops"`
+	DiskReadMaxBytesPerSecond  *uint64 `json:"disk_read_max_bytes_per_second"`
+	DiskWriteMaxBytesPerSecond *uint64 `json:"disk_write_max_bytes_per_second"`
+	DiskReadMaxOpsPerSecond    *uint64 `json:"disk_read_max_ops_per_second"`
+	DiskWriteMaxOpsPerSecond   *uint64 `json:"disk_write_max_ops_per_second"`
 }
 
 // MetricsReply is the reply to POST /agent/v1/metrics.
