@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +101,7 @@ func TestClientStatusError(t *testing.T) {
 					w.Header().Set("Retry-After", tt.retryAfter)
 				}
 				w.WriteHeader(tt.code)
+				_, _ = w.Write([]byte(`{"message":"The samples.0.cpu_percent field must be between 0 and 100."}`))
 			})
 
 			err := c.do(context.Background(), http.MethodPost, "agent/v1/events", map[string]int{}, nil)
@@ -109,6 +111,9 @@ func TestClientStatusError(t *testing.T) {
 			}
 			if statusErr.StatusCode != tt.code || statusErr.RetryAfter != tt.want {
 				t.Errorf("StatusError = %+v, want code %d and wait %v", statusErr, tt.code, tt.want)
+			}
+			if !strings.Contains(statusErr.Body, "cpu_percent") {
+				t.Errorf("StatusError.Body = %q, want the reply for the log", statusErr.Body)
 			}
 		})
 	}

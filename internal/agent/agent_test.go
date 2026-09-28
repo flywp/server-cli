@@ -30,6 +30,34 @@ func (r *recorder) Handle(_ context.Context, rec slog.Record) error {
 	return nil
 }
 
+// recordsOf returns the records with message msg.
+func (r *recorder) recordsOf(msg string) []slog.Record {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var out []slog.Record
+	for _, rec := range r.records {
+		if rec.Message == msg {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// attr returns the value of the attribute key of a record, as a string, or
+// nil.
+func attr(rec slog.Record, key string) any {
+	var v any
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			v = a.Value.String()
+			return false
+		}
+		return true
+	})
+	return v
+}
+
 // times returns the times of the records with message msg.
 func (r *recorder) times(msg string) []time.Time {
 	r.mu.Lock()
@@ -95,7 +123,7 @@ func TestLoopTicksAtTheOffsetAndReportsEachInterval(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error)
 		go func() {
-			done <- Run(ctx, Config{ServerID: 17, StateDir: dir}, slog.New(rec))
+			done <- run(ctx, Config{ServerID: 17, StateDir: dir}, slog.New(rec), &fakeCP{}, nil)
 		}()
 
 		// The bubble starts at 2000-01-01 00:00:00 UTC. Let 4 minutes pass.
@@ -134,7 +162,7 @@ func TestRunRefusesASecondAgent(t *testing.T) {
 	}
 	defer unlock()
 
-	if err := Run(context.Background(), Config{StateDir: dir}, slog.New(&recorder{})); err == nil {
+	if err := run(context.Background(), Config{StateDir: dir}, slog.New(&recorder{}), &fakeCP{}, nil); err == nil {
 		t.Fatal("Run() = nil, want an error while a different agent holds the lock")
 	}
 }
