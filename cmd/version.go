@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/flywp/server-cli/internal/utils"
+	"github.com/flywp/server-cli/internal/release"
 	"github.com/flywp/server-cli/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -30,7 +30,7 @@ var updateCmd = &cobra.Command{
 			return errors.New("the update command must be run as root, please run 'sudo fly update'")
 		}
 
-		update, err := utils.CheckForUpdates(cmd.Context())
+		update, err := release.CheckForUpdates(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("checking for updates: %w", err)
 		}
@@ -58,7 +58,7 @@ var updateCmd = &cobra.Command{
 		}
 
 		fmt.Println("Updating...")
-		if err := utils.SelfUpdate(cmd.Context(), update.Release); err != nil {
+		if err := release.SelfUpdate(cmd.Context(), update.Release); err != nil {
 			return fmt.Errorf("updating: %w", err)
 		}
 

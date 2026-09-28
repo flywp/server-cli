@@ -2,7 +2,10 @@
 // v0.2.1: the requests that the agent sends and the replies that it reads.
 package wire
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // MetricsRequest is the body of POST /agent/v1/metrics (contract section 4).
 type MetricsRequest struct {
@@ -88,4 +91,33 @@ type EventData struct {
 // EventsReply is the reply to POST /agent/v1/events.
 type EventsReply struct {
 	Accepted int `json:"accepted"`
+}
+
+// CommandsReply is the reply to GET /agent/v1/commands (contract section 5):
+// the open commands of the server, oldest first.
+type CommandsReply struct {
+	Commands []Command `json:"commands"`
+}
+
+// The verbs of the contract. The agent runs no other verb.
+const (
+	VerbUpdate  = "agent.update"
+	VerbRestart = "agent.restart"
+)
+
+// Command is a command from the control plane. It comes again on each poll
+// until an event finishes it.
+type Command struct {
+	ID       string          `json:"id"`
+	Verb     string          `json:"verb"`
+	Args     json.RawMessage `json:"args"`
+	IssuedAt time.Time       `json:"issued_at"`
+}
+
+// UpdateArgs are the arguments of agent.update. SHA256 is the sha256 of the
+// release archive at URL, and Version is its release tag.
+type UpdateArgs struct {
+	URL     string `json:"url"`
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
 }

@@ -1,20 +1,30 @@
 package main
 
-// End-to-end tests of "fly agent run": the configuration errors, the lock and
-// a clean stop. The loop itself is tested in internal/agent with a fake clock.
+// End-to-end tests of "fly agent run": the configuration errors, the lock, a
+// clean stop and a real self-update. The loop itself is tested in
+// internal/agent with a fake clock.
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/flywp/server-cli/internal/release"
 )
 
 const testToken = "flyagt_0123456789abcdefghijABCDEFGHIJ"
@@ -121,6 +131,171 @@ func TestAgentSendsAgentStartedToTheControlPlane(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatalf("the control plane got no request within 10s. stderr:\n%s", stderr)
 	}
+}
+
+// updateServer is a control plane with one open agent.update command. The
+// command stays open until an event finishes it.
+type updateServer struct {
+	mu     sync.Mutex
+	args   map[string]string
+	events []map[string]any
+	closed bool
+}
+
+func (s *updateServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch r.URL.Path {
+	case "/agent/v1/events":
+		var body struct{ Events []map[string]any }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		for _, e := range body.Events {
+			s.events = append(s.events, e)
+			if e["command_id"] == "01JBX0000000000000000000E1" {
+				s.closed = true
+			}
+		}
+		_, _ = w.Write([]byte(`{"accepted": 1}`))
+	case "/agent/v1/commands":
+		commands := []any{}
+		if !s.closed {
+			commands = append(commands, map[string]any{"id": "01JBX0000000000000000000E1", "verb": "agent.update", "args": s.args, "issued_at": "2026-09-22T10:00:00Z"})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"commands": commands})
+	default:
+		_, _ = w.Write([]byte(`{"accepted": 1, "rejected": [], "report_interval": 1}`))
+	}
+}
+
+// result returns the result event of the update command, or nil.
+func (s *updateServer) result() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.events {
+		if e["command_id"] == "01JBX0000000000000000000E1" {
+			return e
+		}
+	}
+	return nil
+}
+
+func TestAgentUpdatesItself(t *testing.T) {
+	environ := agentEnv(t)
+
+	// The agent replaces its own binary, so it runs from a copy.
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "fly")
+	data, err := os.ReadFile(flyBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The new release: fly built as v9.9.9, in the archive layout of a release.
+	newBin := filepath.Join(t.TempDir(), "fly")
+	build := exec.Command("go", "build", "-ldflags", "-X github.com/flywp/server-cli/internal/version.Version=v9.9.9", "-o", newBin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building the new release: %v\n%s", err, out)
+	}
+	tarball := releaseArchive(t, newBin, release.BinaryName(runtime.GOOS, runtime.GOARCH))
+	sum := sha256.Sum256(tarball)
+
+	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(tarball) }))
+	defer files.Close()
+	cp := &updateServer{args: map[string]string{"url": files.URL + "/fly.tar.gz", "version": "v9.9.9", "sha256": hex.EncodeToString(sum[:])}}
+	srv := httptest.NewServer(cp)
+	defer srv.Close()
+
+	// Work 3 seconds from now, not at the second of server id 17.
+	environ = append(environ, "FLY_AGENT_URL="+srv.URL, fmt.Sprintf("FLY_AGENT_SERVER_ID=%d", (time.Now().Second()+3)%60))
+
+	first := exec.Command(exe, "agent", "run")
+	first.Env = environ
+	stderr := &lockedBuffer{}
+	first.Stderr = stderr
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- first.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the agent exit after the update: %v, want 0. stderr:\n%s", err, stderr)
+		}
+	case <-time.After(30 * time.Second):
+		_ = first.Process.Kill()
+		t.Fatalf("the agent did not exit for the update within 30s. stderr:\n%s", stderr)
+	}
+
+	if out := runFlyAt(t, exe, "version"); !strings.Contains(out, "v9.9.9") {
+		t.Fatalf("fly version = %q, want the new release v9.9.9 on disk", out)
+	}
+	if cp.result() != nil {
+		t.Error("the old process sent the result; the new process must send it")
+	}
+
+	// systemd starts the new binary. It sends the result at once.
+	second := exec.Command(exe, "agent", "run")
+	second.Env = environ
+	second.Stderr = &lockedBuffer{}
+	if err := second.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Process.Signal(syscall.SIGTERM); _ = second.Wait() }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for cp.result() == nil && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	e := cp.result()
+	if e == nil || e["name"] != "command.completed" {
+		t.Fatalf("result = %v, want command.completed", e)
+	}
+	if data, _ := e["data"].(map[string]any); data["version"] != "v9.9.9" {
+		t.Errorf("result data = %v, want version v9.9.9", e["data"])
+	}
+}
+
+// runFlyAt runs the fly binary at exe and returns its stdout.
+func runFlyAt(t *testing.T, exe string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command(exe, args...).Output()
+	if err != nil {
+		t.Fatalf("%s %v: %v", exe, args, err)
+	}
+	return string(out)
+}
+
+// releaseArchive returns a tar.gz archive that holds the file bin as name.
+func releaseArchive(t *testing.T, bin, name string) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return buf.Bytes()
 }
 
 func TestAgentConfigErrors(t *testing.T) {

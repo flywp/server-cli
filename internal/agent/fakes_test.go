@@ -19,6 +19,7 @@ type fakeCP struct {
 	metricsAt []time.Time
 	events    []wire.EventsRequest
 	eventsAt  []time.Time
+	pollAt    []time.Time
 
 	// latency is the time of each metrics request. The request ends early
 	// when its context ends, like a real HTTP request.
@@ -27,6 +28,44 @@ type fakeCP struct {
 	// The reply funcs get the number of the call, from 0.
 	metricsReply func(call int, req *wire.MetricsRequest) (*wire.MetricsReply, error)
 	eventsReply  func(call int, req *wire.EventsRequest) (*wire.EventsReply, error)
+	// commands are the open commands of each poll. A command stays open
+	// until an event with its id arrives, unless keepOpen is true.
+	commands []wire.Command
+	keepOpen bool
+}
+
+func (f *fakeCP) PollCommands(context.Context) (*wire.CommandsReply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.pollAt = append(f.pollAt, time.Now())
+
+	var open []wire.Command
+	for _, c := range f.commands {
+		if f.keepOpen || len(f.resultsLocked(c.ID)) == 0 {
+			open = append(open, c)
+		}
+	}
+	return &wire.CommandsReply{Commands: open}, nil
+}
+
+// results returns the events that the agent sent for the command id.
+func (f *fakeCP) results(id string) []wire.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.resultsLocked(id)
+}
+
+func (f *fakeCP) resultsLocked(id string) []wire.Event {
+	var out []wire.Event
+	for _, r := range f.events {
+		for _, e := range r.Events {
+			if e.CommandID == id {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
 }
 
 func (f *fakeCP) PostMetrics(ctx context.Context, req *wire.MetricsRequest) (*wire.MetricsReply, error) {

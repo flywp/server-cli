@@ -2,6 +2,8 @@
 
 Easy CLI tool for servers managed by FlyWP.
 
+Conforms to the FlyWP monitoring agent contract v0.2.1.
+
 ## Installation
 
 ### Prerequisites
@@ -98,6 +100,17 @@ fly --domain example.com wp plugin list --format=json
 ```
 
 All arguments after the WP-CLI command (or after the command for `fly exec`) go to that command unchanged, flags included. Put `--domain` before the command. To pass a flag as the first argument, put `--` before it, for example `fly wp -- --info`.
+
+### Monitoring agent
+
+`fly agent run` is the FlyWP monitoring agent. It runs all the time under systemd (`fly-agent.service`, as the server user, not root), and FlyWP installs it. Each minute it measures CPU, load, memory, swap, disk and network traffic, and it sends the values and the server status (restart needed, waiting updates, OS, kernel, uptime) to FlyWP. It keeps unsent data on disk for up to 24 hours. FlyWP can update and restart the agent through it, without SSH. The agent does not need Docker.
+
+It reads `FLY_AGENT_URL` (https), `FLY_AGENT_TOKEN` and `FLY_AGENT_SERVER_ID` from `/etc/fly/agent.env`, and keeps its state in `STATE_DIRECTORY` (`/var/lib/fly-agent`).
+
+```bash
+systemctl status fly-agent    # is the agent running?
+journalctl -u fly-agent -f    # the agent log
+```
 
 ### Global Commands
 
