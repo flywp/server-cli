@@ -40,7 +40,7 @@ After a change, run `sudo systemctl restart fly-agent`.
 | `ran.json` | The commands that ran, so that no command runs two times. |
 | `counters.json` | The last counters, so that a restart does not lose a minute of traffic. |
 | `state.json` | The report interval, and the time of the last release check. |
-| `traffic.json` | Where the next read of the proxy's traffic log starts: the file's inode and the byte offset. |
+| `traffic.json` | Where the next read of the proxy's traffic log starts: the file's inode, the byte offset, and a hash of the file's first bytes. |
 | `lock` | Stops a second agent. |
 
 Each file is written to a temporary file first, then renamed, so a crash never leaves half a file.
@@ -90,7 +90,8 @@ name, at most 1000 names.
 
 - The first read starts at the end of the file. The offset is saved before the sample is buffered,
   so a stop loses those bytes and never sends them two times.
-- A new file, or a file shorter than the offset, is read from the start.
+- A new file (another inode, or other first bytes), or a file shorter than the offset, is read from
+  the start.
 - When the agent has read all of a file larger than 64 MiB, it cuts the file to 0.
 - Without the file, `traffic` is `null`.
 

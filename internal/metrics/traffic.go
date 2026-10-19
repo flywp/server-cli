@@ -3,11 +3,14 @@ package metrics
 import (
 	"bufio"
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
 	"maps"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +26,10 @@ const (
 	// trafficMaxHosts is the most names in a sample: past it, the names with
 	// the fewest bytes are left out (contract v0.6.0).
 	trafficMaxHosts = 1000
+	// trafficHead is the most bytes from the start of the log that the agent
+	// hashes to know the file again: Linux can give a new file the inode of
+	// one that was just deleted.
+	trafficHead = 256
 )
 
 // trafficReader reads the traffic log that the server's front proxy writes
@@ -35,10 +42,12 @@ type trafficReader struct {
 	limit int64  // trafficLimit; tests set a smaller one
 }
 
-// trafficOffset is where the next read starts, in the file with that inode.
+// trafficOffset is where the next read starts, in the file with that inode
+// and that hash of its first bytes (up to trafficHead, and not past Offset).
 type trafficOffset struct {
 	Inode  uint64 `json:"inode"`
 	Offset int64  `json:"offset"`
+	Head   string `json:"head"`
 }
 
 // read returns the bytes the proxy sent for each name since the last read,
@@ -75,13 +84,14 @@ func (r *trafficReader) read(log *slog.Logger) []wire.Traffic {
 		}
 		// A first read starts at the end: the lines before it can be of an
 		// earlier month, and one sample must not bring them all.
-		r.save(log, trafficOffset{Inode: inode, Offset: size})
+		r.save(log, f, trafficOffset{Inode: inode, Offset: size})
 		return []wire.Traffic{}
 	}
 
 	offset := saved.Offset
-	if saved.Inode != inode || size < offset {
-		// A new file, or one that was cut: from the start.
+	if offset < 0 || saved.Inode != inode || size < offset || head(f, offset) != saved.Head {
+		// A new file, or one that was cut: from the start. The head tells a
+		// new file that got the inode of the old one.
 		offset = 0
 	}
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
@@ -116,7 +126,7 @@ func (r *trafficReader) read(log *slog.Logger) []wire.Traffic {
 			offset = 0
 		}
 	}
-	r.save(log, trafficOffset{Inode: inode, Offset: offset})
+	r.save(log, f, trafficOffset{Inode: inode, Offset: offset})
 
 	hosts := slices.SortedFunc(maps.Keys(sent), func(a, b string) int {
 		return cmp.Or(cmp.Compare(sent[b], sent[a]), cmp.Compare(a, b))
@@ -128,8 +138,21 @@ func (r *trafficReader) read(log *slog.Logger) []wire.Traffic {
 	return out
 }
 
-func (r *trafficReader) save(log *slog.Logger, o trafficOffset) {
+// save writes the offset o in the file f, with the hash of f's head.
+func (r *trafficReader) save(log *slog.Logger, f *os.File, o trafficOffset) {
+	o.Head = head(f, o.Offset)
 	if err := statefile.Write(r.state, o); err != nil {
 		log.Warn("saving the traffic offset", "error", err)
 	}
+}
+
+// head returns the hash of the first bytes of f, up to trafficHead and not
+// past offset, or "" when it cannot read them.
+func head(f *os.File, offset int64) string {
+	buf := make([]byte, min(max(offset, 0), trafficHead))
+	if _, err := f.ReadAt(buf, 0); err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(buf)
+	return hex.EncodeToString(sum[:])
 }

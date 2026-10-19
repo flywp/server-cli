@@ -95,6 +95,23 @@ func TestTrafficReadsANewOrCutFileFromTheStart(t *testing.T) {
 	}
 }
 
+func TestTrafficKnowsANewFileWithTheSameInode(t *testing.T) {
+	r, write := trafficLog(t)
+	write("")
+	r.read(quiet)
+	write("shop.example.com 7\n")
+	r.read(quiet)
+
+	// Linux can give a new file the inode of one that was just deleted. The
+	// same file written again has the same inode on each system.
+	if err := os.WriteFile(r.path, []byte("a.shop.example.com 300000\n"), 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.read(quiet); !reflect.DeepEqual(got, []wire.Traffic{{Host: "a.shop.example.com", Bytes: 300000}}) {
+		t.Errorf("read() of a new file with the same inode = %v, want it from the start", got)
+	}
+}
+
 func TestTrafficCutsALargeLogOnceItIsRead(t *testing.T) {
 	r, write := trafficLog(t)
 	r.limit = 64
