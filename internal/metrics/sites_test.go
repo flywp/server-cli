@@ -58,7 +58,7 @@ func sitesCollector(t *testing.T, srv *server, cs []fakeContainer) *Collector {
 	c := srv.collector(t.TempDir())
 	c.docker = dockerapi.New(engine.Socket)
 	c.home = filepath.Join(srv.root, "home/fly")
-	c.walker.walk = func(context.Context, string) (uint64, int, error) { return 4096, 0, nil }
+	c.walker.walk = func(context.Context, string) (folderUse, int, error) { return folderUse{used: 4096}, 0, nil }
 	return c
 }
 
@@ -220,9 +220,10 @@ func TestSitesDiskIsSentOneTime(t *testing.T) {
 	srv.cgroup("a1", 1, 1, 0)
 	c := sitesCollector(t, srv, []fakeContainer{{"a1", srv.home("example.com")}})
 	var walked []string
-	c.walker.walk = func(_ context.Context, root string) (uint64, int, error) {
+	c.walker.walk = func(_ context.Context, root string) (folderUse, int, error) {
 		walked = append(walked, root)
-		return 8192, 0, nil
+		own := uint64(4096)
+		return folderUse{used: 8192, own: &own}, 0, nil
 	}
 	base := time.Now().Add(time.Second)
 
@@ -245,6 +246,10 @@ func TestSitesDiskIsSentOneTime(t *testing.T) {
 	if d := second.Sites[0].DiskUsedBytes; d == nil || *d != 8192 {
 		t.Errorf("disk in the second sample = %v, want 8192", ptr(d))
 	}
+	// The site's own files come from the same walk (contract v0.6.0).
+	if f := second.Sites[0].FilesBytes; f == nil || *f != 4096 {
+		t.Errorf("own files in the second sample = %v, want 4096", ptr(f))
+	}
 
 	// One time only, and no new walk within one hour.
 	third, err := c.Sample(base.Add(2 * time.Minute))
@@ -261,7 +266,7 @@ func TestSitesDiskWalkThatFails(t *testing.T) {
 	srv := newServer(t)
 	srv.cgroup("a1", 1, 1, 0)
 	c := sitesCollector(t, srv, []fakeContainer{{"a1", srv.home("example.com")}})
-	c.walker.walk = func(context.Context, string) (uint64, int, error) { return 0, 0, context.DeadlineExceeded }
+	c.walker.walk = func(context.Context, string) (folderUse, int, error) { return folderUse{}, 0, context.DeadlineExceeded }
 
 	if _, err := c.Sample(time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
@@ -353,11 +358,11 @@ func TestSitesDiskWalkThatHangs(t *testing.T) {
 	hang := make(chan struct{})
 	t.Cleanup(func() { close(hang) })
 	c.walker.timeout = 50 * time.Millisecond
-	c.walker.walk = func(_ context.Context, root string) (uint64, int, error) {
+	c.walker.walk = func(_ context.Context, root string) (folderUse, int, error) {
 		if strings.HasSuffix(root, "a.com") {
 			<-hang
 		}
-		return 4096, 0, nil
+		return folderUse{used: 4096}, 0, nil
 	}
 
 	if _, err := c.Sample(time.Now().Add(time.Second)); err != nil {
@@ -385,7 +390,7 @@ func TestSitesWarnOneTimeForFilesThatCannotBeRead(t *testing.T) {
 	c := sitesCollector(t, srv, []fakeContainer{{"a1", srv.home(".fly")}})
 	rec := &levels{}
 	c.log = slog.New(rec)
-	c.walker.walk = func(context.Context, string) (uint64, int, error) { return 4096, 9, nil }
+	c.walker.walk = func(context.Context, string) (folderUse, int, error) { return folderUse{used: 4096}, 9, nil }
 
 	for i := range 3 {
 		c.walker.mu.Lock()

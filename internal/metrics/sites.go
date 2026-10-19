@@ -58,7 +58,7 @@ func homeDir() string {
 }
 
 // sites measures each Docker Compose project in the home folder at the tick
-// cur, read at readAt (contract v0.5.0). It returns nil when the agent cannot read Docker or
+// cur, read at readAt (contract v0.5.0; own files and traffic v0.6.0). It returns nil when the agent cannot read Docker or
 // the cgroups: Docker does not run, the socket refuses the agent, or the
 // server has cgroup v1. It returns an empty, non-nil slice when no project
 // matches.
@@ -148,7 +148,8 @@ func (c *Collector) sites(ctx context.Context, cur reading, readAt time.Time) []
 			site.MemoryUsedBytes = &p.mem
 		}
 		if d, ok := disk[name]; ok {
-			site.DiskUsedBytes = &d
+			site.DiskUsedBytes = &d.used
+			site.FilesBytes = d.own
 		}
 		out = append(out, site)
 	}
@@ -228,21 +229,28 @@ func statValue(key string) func([]byte) (uint64, error) {
 	}
 }
 
+// folderUse is the disk use of one project folder: all of it, and its app
+// folder (the site's own files), nil when it has none (contract v0.6.0).
+type folderUse struct {
+	used uint64
+	own  *uint64
+}
+
 // diskWalker measures the disk use of the project folders in a goroutine of
 // its own, so that a large folder does not delay the samples. The collector
 // takes each result one time.
 type diskWalker struct {
 	mu      sync.Mutex
 	running bool
-	last    time.Time         // the start of the last walk
-	results map[string]uint64 // by directory, not yet sent
+	last    time.Time            // the start of the last walk
+	results map[string]folderUse // by directory, not yet sent
 	// skipWarned holds the directories whose skipped files were logged as a
 	// warning. Only the walk goroutine uses it.
 	skipWarned map[string]bool
 	// done is closed when the running walk ends. Tests wait for it.
 	done chan struct{}
 	// walk measures one folder, and timeout limits it. Tests replace them.
-	walk    func(ctx context.Context, root string) (uint64, int, error)
+	walk    func(ctx context.Context, root string) (folderUse, int, error)
 	timeout time.Duration
 }
 
@@ -265,7 +273,7 @@ func (w *diskWalker) start(folders map[string]string, log *slog.Logger) {
 	go func() {
 		defer close(done)
 
-		results := map[string]uint64{}
+		results := map[string]folderUse{}
 		for _, name := range slices.Sorted(func(yield func(string) bool) {
 			for name := range folders {
 				if !yield(name) {
@@ -302,12 +310,12 @@ func (w *diskWalker) start(folders map[string]string, log *slog.Logger) {
 // for it after the timeout. A walk that hangs in a system call, for example on
 // a network mount that does not answer, stays behind; the other folders and
 // the next walks go on.
-func (w *diskWalker) walkOne(root string) (uint64, int, error) {
+func (w *diskWalker) walkOne(root string) (folderUse, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
 	defer cancel()
 
 	type result struct {
-		used    uint64
+		used    folderUse
 		skipped int
 		err     error
 	}
@@ -325,12 +333,12 @@ func (w *diskWalker) walkOne(root string) (uint64, int, error) {
 	case r := <-ch:
 		return r.used, r.skipped, r.err
 	case <-ctx.Done():
-		return 0, 0, ctx.Err()
+		return folderUse{}, 0, ctx.Err()
 	}
 }
 
 // take returns the results of the last walk that ended, one time.
-func (w *diskWalker) take() map[string]uint64 {
+func (w *diskWalker) take() map[string]folderUse {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	r := w.results
