@@ -6,6 +6,7 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -19,13 +20,15 @@ func fileID(path string) uint64 {
 }
 
 // diskUsage returns the space that the files under root take on the disk: the
-// allocated blocks, as du shows them (st_blocks × 512). It does not follow a
-// symbolic link, does not go into an other file system, and counts a file
-// with more than one hard link one time. It skips what it cannot read, and
-// returns the number of those skips. It stops when ctx is done.
-func diskUsage(ctx context.Context, root string) (used uint64, skipped int, err error) {
-	var dev uint64
+// allocated blocks, as du shows them (st_blocks × 512), and the part of it in
+// the app folder of root, the site's own files (nil without one). It does not
+// follow a symbolic link, does not go into an other file system, and counts a
+// file with more than one hard link one time. It skips what it cannot read,
+// and returns the number of those skips. It stops when ctx is done.
+func diskUsage(ctx context.Context, root string) (use folderUse, skipped int, err error) {
+	var dev, own uint64
 	seen := map[[2]uint64]bool{}
+	app := filepath.Join(root, "app")
 
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -69,9 +72,16 @@ func diskUsage(ctx context.Context, root string) (used uint64, skipped int, err 
 			seen[key] = true
 		}
 
-		used += uint64(st.Blocks) * 512
+		blocks := uint64(st.Blocks) * 512
+		use.used += blocks
+		if path == app && d.IsDir() {
+			use.own = &own
+		}
+		if path == app || strings.HasPrefix(path, app+string(filepath.Separator)) {
+			own += blocks
+		}
 		return nil
 	})
 
-	return used, skipped, err
+	return use, skipped, err
 }

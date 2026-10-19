@@ -4,7 +4,7 @@
 values to FlyWP. FlyWP shows them as charts and alerts, and can restart or update the agent without
 SSH.
 
-The agent follows the FlyWP monitoring agent contract **v0.5.0**. The contract defines the requests,
+The agent follows the FlyWP monitoring agent contract **v0.6.0**. The contract defines the requests,
 the fields and the rules on both sides.
 
 ## How it runs
@@ -40,6 +40,7 @@ After a change, run `sudo systemctl restart fly-agent`.
 | `ran.json` | The commands that ran, so that no command runs two times. |
 | `counters.json` | The last counters, so that a restart does not lose a minute of traffic. |
 | `state.json` | The report interval, and the time of the last release check. |
+| `traffic.json` | Where the next read of the proxy's traffic log starts: the file's inode and the byte offset. |
 | `lock` | Stops a second agent. |
 
 Each file is written to a temporary file first, then renamed, so a crash never leaves half a file.
@@ -59,6 +60,7 @@ average of the minute hides.
 | Pressure (PSI) | the share of time that tasks waited for CPU, memory or disk I/O, and its peak. Not sent when the kernel has no PSI. |
 | Disk activity | bytes and operations read and written on the physical disks, and the peaks each second |
 | Sites | the CPU, memory and disk use of each site (see below) |
+| Traffic | the bytes the front proxy sent for each site name in the minute (see below) |
 
 With the samples, the agent sends the **status** of the server: restart needed, waiting updates
 (and security updates), OS, kernel, uptime, architecture, CPU count, Docker state (`running`,
@@ -76,6 +78,21 @@ For each site, the agent sends:
   the lowest I/O priority. A folder that the server user cannot list is skipped, so the value can be
   lower than the real use (for example, the database files in `~/.fly` belong to the container
   user).
+- **Own files:** the size of its `app` folder, from the same walk: the site's files without its
+  cache, backups and logs. `null` for a project with no `app` folder.
+
+### Traffic
+
+On a server where FlyWP set it up (White Label customer sites), the front proxy writes a second log
+for the agent: `~/.fly/nginx/logs/traffic.log`, one line for each request with the name of the site
+(`$server_name`) and the bytes sent. Each sample adds the lines written since the sample before, by
+name, at most 1000 names.
+
+- The first read starts at the end of the file. The offset is saved before the sample is buffered,
+  so a stop loses those bytes and never sends them two times.
+- A new file, or a file shorter than the offset, is read from the start.
+- When the agent has read all of a file larger than 64 MiB, it cuts the file to 0.
+- Without the file, `traffic` is `null`.
 
 The agent reads Docker through its socket with two requests only: `GET /version` and
 `GET /containers/json`. It reads CPU and memory from cgroup v2. Without Docker or cgroup v2, it

@@ -1,5 +1,5 @@
 // Package wire holds the JSON bodies of the FlyWP monitoring agent contract
-// v0.5.0: the requests that the agent sends and the replies that it reads.
+// v0.6.0: the requests that the agent sends and the replies that it reads.
 package wire
 
 import (
@@ -94,15 +94,31 @@ type Sample struct {
 	// the agent cannot read Docker; an empty, non-nil slice ([]) means that
 	// Docker runs and no project matches.
 	Sites []Site `json:"sites"`
+
+	// Traffic holds the bytes that the server's front proxy sent for each
+	// site name since the sample before, from its traffic log (contract
+	// v0.6.0). nil (JSON null) means that the server has no traffic log; an
+	// empty, non-nil slice means that no request came.
+	Traffic []Traffic `json:"traffic"`
 }
 
 // Site is the use of one Docker Compose project in the minute. nil (JSON
-// null) means "not known". DiskUsedBytes is set in one sample each hour.
+// null) means "not known". DiskUsedBytes and FilesBytes are set in one
+// sample each hour, from the same walk: FilesBytes is the project's app
+// folder, the site's own files (contract v0.6.0).
 type Site struct {
 	Directory       string   `json:"directory"`
 	CPUPercent      *float64 `json:"cpu_percent"`
 	MemoryUsedBytes *uint64  `json:"memory_used_bytes"`
 	DiskUsedBytes   *uint64  `json:"disk_used_bytes"`
+	FilesBytes      *uint64  `json:"files_bytes"`
+}
+
+// Traffic is what the front proxy sent for one site name: the name of its
+// matched server block (nginx $server_name), and the bytes with the headers.
+type Traffic struct {
+	Host  string `json:"host"`
+	Bytes uint64 `json:"bytes"`
 }
 
 // MetricsReply is the reply to POST /agent/v1/metrics.

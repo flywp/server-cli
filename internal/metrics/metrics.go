@@ -1,7 +1,7 @@
 // Package metrics measures a Linux server for the monitoring agent: CPU,
 // load, memory, swap, disk, network, pressure (PSI) and disk activity each
 // minute, with the peaks of the minute from a reading each 10 seconds, the
-// use of each site, and the status of the server (contract v0.5.0). It needs
+// use of each site, and the status of the server (contract v0.5.0; own files and traffic v0.6.0). It needs
 // no root.
 package metrics
 
@@ -99,6 +99,8 @@ type Collector struct {
 	// and walker measures the disk use of the sites.
 	prevContainers *containerReadings
 	walker         *diskWalker
+	// traffic reads the front proxy's traffic log (contract v0.6.0).
+	traffic *trafficReader
 
 	updatesAt       time.Time
 	updatesKnown    bool
@@ -121,6 +123,10 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 	c.docker = dockerapi.New(c.file("var/run/docker.sock"))
 	c.home = homeDir()
 	c.walker = newDiskWalker()
+	c.traffic = &trafficReader{state: filepath.Join(stateDir, "traffic.json"), limit: trafficLimit}
+	if c.home != "" {
+		c.traffic.path = filepath.Join(c.home, ".fly", "nginx", "logs", "traffic.log")
+	}
 
 	// Take a reading now, so that the first sample has a CPU value for the
 	// time since the start. The saved reading comes before it only when it is
@@ -242,6 +248,9 @@ func (c *Collector) Sample(now time.Time) (wire.Sample, error) {
 	// The sites come after each step that can fail: they take the result
 	// of the disk walk, which must not go with a sample that is dropped.
 	s.Sites = c.sites(context.Background(), cur, readAt)
+	// Last too: the read saves its offset, so its bytes go with this sample
+	// or with none.
+	s.Traffic = c.traffic.read(c.log)
 
 	c.prev = &cur
 	c.readings = nil

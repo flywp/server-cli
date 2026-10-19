@@ -10,6 +10,6 @@ import (
 
 func fileID(string) uint64 { return 0 }
 
-func diskUsage(context.Context, string) (uint64, int, error) {
-	return 0, 0, errors.New("disk use is not measured on " + runtime.GOOS)
+func diskUsage(context.Context, string) (folderUse, int, error) {
+	return folderUse{}, 0, errors.New("disk use is not measured on " + runtime.GOOS)
 }
