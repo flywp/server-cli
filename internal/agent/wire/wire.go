@@ -96,8 +96,8 @@ type Sample struct {
 	Sites []Site `json:"sites"`
 
 	// Traffic holds the bytes that the server's front proxy sent for each
-	// site name since the sample before, from its traffic log (contract
-	// v0.6.0). nil (JSON null) means that the server has no traffic log; an
+	// site name since the sample before, from its traffic log
+	// ~/.fly/nginx/vhost/flywp-traffic.log (contract v0.6.0). nil (JSON null) means that the server has no traffic log; an
 	// empty, non-nil slice means that no request came.
 	Traffic []Traffic `json:"traffic"`
 }

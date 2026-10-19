@@ -125,7 +125,7 @@ func New(root, stateDir string, log *slog.Logger) *Collector {
 	c.walker = newDiskWalker()
 	c.traffic = &trafficReader{state: filepath.Join(stateDir, "traffic.json"), limit: trafficLimit}
 	if c.home != "" {
-		c.traffic.path = filepath.Join(c.home, ".fly", "nginx", "logs", "traffic.log")
+		c.traffic.path = filepath.Join(c.home, ".fly", "nginx", "vhost", "flywp-traffic.log")
 	}
 
 	// Take a reading now, so that the first sample has a CPU value for the

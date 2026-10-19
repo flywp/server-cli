@@ -84,7 +84,7 @@ For each site, the agent sends:
 ### Traffic
 
 On a server where FlyWP set it up (White Label customer sites), the front proxy writes a second log
-for the agent: `~/.fly/nginx/logs/traffic.log`, one line for each request with the name of the site
+for the agent: `~/.fly/nginx/vhost/flywp-traffic.log`, one line for each request with the name of the site
 (`$server_name`) and the bytes sent. Each sample adds the lines written since the sample before, by
 name, at most 1000 names.
 
