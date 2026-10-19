@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -51,7 +50,9 @@ func (r *trafficReader) read(log *slog.Logger) []wire.Traffic {
 	if r.path == "" {
 		return nil
 	}
-	f, err := os.Open(r.path)
+	// Never through a symbolic link, and only a regular file: the agent cuts
+	// this file, so a link in its place must not make it cut another one.
+	f, err := openNoFollow(r.path)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			log.Warn("cannot read the traffic log", "error", err)
@@ -61,11 +62,11 @@ func (r *trafficReader) read(log *slog.Logger) []wire.Traffic {
 	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
-	if err != nil {
-		log.Warn("cannot read the traffic log", "error", err)
+	if err != nil || !info.Mode().IsRegular() {
+		log.Warn("cannot read the traffic log: not a regular file", "error", err)
 		return nil
 	}
-	size, inode := info.Size(), fileID(r.path)
+	size, inode := info.Size(), inodeOf(info)
 
 	var saved trafficOffset
 	if err := statefile.Read(r.state, &saved); err != nil {
@@ -109,7 +110,7 @@ func (r *trafficReader) read(log *slog.Logger) []wire.Traffic {
 	// Read to the end of a large file: cut it, so that it stays small. The
 	// lines written between the read and the cut are lost.
 	if offset == size && size > r.limit {
-		if err := os.Truncate(r.path, 0); err != nil {
+		if err := f.Truncate(0); err != nil {
 			log.Warn("cannot cut the traffic log", "error", err)
 		} else {
 			offset = 0

@@ -5,10 +5,24 @@ package metrics
 import (
 	"context"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 )
+
+// openNoFollow opens a file to read and cut it, and refuses a symbolic link.
+func openNoFollow(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
+}
+
+// inodeOf returns the inode of an open file's info, or 0.
+func inodeOf(info fs.FileInfo) uint64 {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Ino)
+	}
+	return 0
+}
 
 // fileID returns the inode of a path, or 0.
 func fileID(path string) uint64 {

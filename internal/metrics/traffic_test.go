@@ -129,3 +129,22 @@ func TestTrafficSendsTheNamesWithTheMostBytes(t *testing.T) {
 		t.Errorf("read() = %d names from %d to %d bytes, want the %d with the most", len(got), got[0].Bytes, got[len(got)-1].Bytes, trafficMaxHosts)
 	}
 }
+
+func TestTrafficRefusesALinkInPlaceOfTheLog(t *testing.T) {
+	r, _ := trafficLog(t)
+	other := filepath.Join(t.TempDir(), "other")
+	if err := os.WriteFile(other, []byte(strings.Repeat("x 1\n", 100)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, r.path); err != nil {
+		t.Fatal(err)
+	}
+	r.limit = 1
+
+	if got := r.read(quiet); got != nil {
+		t.Errorf("read() through a link = %v, want nil", got)
+	}
+	if info, err := os.Stat(other); err != nil || info.Size() != 400 {
+		t.Errorf("the link's target = %v, %v, want it untouched", info, err)
+	}
+}
