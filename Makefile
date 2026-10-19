@@ -37,7 +37,7 @@ TAR_OWNER := $(shell tar --version 2>/dev/null | grep -q GNU && echo '--owner=0 
 
 # "go run pkg@version" builds each tool with the Go version of this module,
 # so a tool cannot be older than go.mod.
-GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
 GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.8.0
 
 build: ## Build bin/fly for this platform

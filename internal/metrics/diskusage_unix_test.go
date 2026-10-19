@@ -50,12 +50,33 @@ func TestDiskUsage(t *testing.T) {
 		want += blocks(t, filepath.Join(root, p))
 	}
 
+	var wantOwn uint64
+	for _, p := range []string{"app", "app/uploads", "app/index.php", "app/uploads/big.jpg"} {
+		wantOwn += blocks(t, filepath.Join(root, p))
+	}
+
 	got, skipped, err := diskUsage(context.Background(), root)
 	if err != nil || skipped != 0 {
-		t.Fatalf("diskUsage() = %d, %d skipped, %v", got, skipped, err)
+		t.Fatalf("diskUsage() = %d, %d skipped, %v", got.used, skipped, err)
 	}
-	if got != want {
-		t.Errorf("diskUsage() = %d, want %d: the blocks of each file one time, without the target of the symbolic link", got, want)
+	if got.used != want {
+		t.Errorf("diskUsage() = %d, want %d: the blocks of each file one time, without the target of the symbolic link", got.used, want)
+	}
+	// The site's own files: the app folder (contract v0.6.0).
+	if got.own == nil || *got.own != wantOwn {
+		t.Errorf("diskUsage() own = %v, want %d: the app folder", got.own, wantOwn)
+	}
+}
+
+func TestDiskUsageWithNoAppFolder(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "docker-compose.yml"), []byte("services: {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _, err := diskUsage(context.Background(), root)
+	if err != nil || got.used == 0 || got.own != nil {
+		t.Errorf("diskUsage() = %+v, %v, want a size and no own files", got, err)
 	}
 }
 
@@ -80,8 +101,8 @@ func TestDiskUsageSkipsWhatItCannotRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skipped != 1 || got != blocks(t, root)+blocks(t, locked) {
-		t.Errorf("diskUsage() = %d with %d skipped, want the two folders and 1 skip", got, skipped)
+	if skipped != 1 || got.used != blocks(t, root)+blocks(t, locked) {
+		t.Errorf("diskUsage() = %d with %d skipped, want the two folders and 1 skip", got.used, skipped)
 	}
 }
 
